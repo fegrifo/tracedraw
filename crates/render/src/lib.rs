@@ -5275,6 +5275,63 @@ pub fn render_whole_page_image(doc: &Document, page: PageId, long_px: f64) -> Op
     render_area_image(doc, page, area, long_px * 25.4 / longest)
 }
 
+/// Pixel size and view transform for rendering a page of `width_mm` ×
+/// `height_mm` at `zoom` pixels per millimetre without leaving a
+/// sub-pixel white strip along the top or right edge (#2866).
+pub fn fitted_page_view(
+    width_mm: f64,
+    height_mm: f64,
+    zoom: f64,
+) -> Option<(u32, u32, ViewTransform)> {
+    if !(width_mm > 0.0 && height_mm > 0.0 && zoom.is_finite() && zoom > 0.0) {
+        return None;
+    }
+    let w = (width_mm * zoom).ceil().max(1.0) as u32;
+    let h = (height_mm * zoom).ceil().max(1.0) as u32;
+    let fit_zoom = (w as f64 / width_mm).max(h as f64 / height_mm);
+    let origin_x = -(width_mm * fit_zoom - w as f64) * 0.5;
+    let origin_y = h as f64 + (height_mm * fit_zoom - h as f64) * 0.5;
+    Some((
+        w,
+        h,
+        ViewTransform {
+            zoom: fit_zoom,
+            origin_x,
+            origin_y,
+        },
+    ))
+}
+
+/// `render_page_image` fitted so fractional pixel sizes never leave a
+/// sub-pixel white strip along the top or right edge (#2866).
+pub fn render_fitted_page_image(doc: &Document, page: PageId, dpi: f64) -> Option<Pixmap> {
+    let p = doc.page(page).ok()?;
+    let (w, h, view) = fitted_page_view(p.size.width, p.size.height, dpi / 25.4)?;
+    let mut objects = render_page(
+        doc,
+        page,
+        &RenderOptions {
+            width: w,
+            height: h,
+            view,
+            preview: None,
+            ..RenderOptions::default()
+        },
+    )?;
+    let mut out = Pixmap::new(w, h)?;
+    out.fill(SkColor::WHITE);
+    out.draw_pixmap(
+        0,
+        0,
+        objects.as_ref(),
+        &tiny_skia::PixmapPaint::default(),
+        Transform::identity(),
+        None,
+    );
+    let _ = &mut objects;
+    Some(out)
+}
+
 /// `render_page_image` with the behaviour flags of `opts` (`wireframe`,
 /// `simulate_overprints`, `complex_effects`); its size, view and preview
 /// are replaced by the page's own.
@@ -10979,6 +11036,53 @@ mod inner_shadow_view_tests {
                 }
             }
             assert!(worst <= 1, "zoom {zoom}: {worst}");
+        }
+    }
+
+    #[test]
+    fn fractional_page_size_leaves_no_white_border_on_top_or_right() {
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(30.0, 40.0));
+        let page = doc.pages[0].id;
+        let layer = doc.pages[0].layers[0].id;
+        let mut shape = Shape::new(
+            tracedraw_core::ShapeId(1),
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 30.0, 40.0),
+                corners: Default::default(),
+                radius: Default::default(),
+            },
+        );
+        shape.fill = Fill::Solid(Color::BLACK);
+        shape.stroke = None;
+        doc.layer_mut(layer).unwrap().shapes.push(shape);
+
+        for dpi in [96.0, 150.0, 300.0] {
+            let pm = render_fitted_page_image(&doc, page, dpi).expect("render");
+            let (w, h) = (pm.width(), pm.height());
+            for x in 0..w {
+                assert_ne!(
+                    pm.pixel(x, 0).unwrap().red(),
+                    255,
+                    "top edge white at x={x}, dpi={dpi}"
+                );
+                assert_ne!(
+                    pm.pixel(x, h - 1).unwrap().red(),
+                    255,
+                    "bottom edge white at x={x}, dpi={dpi}"
+                );
+            }
+            for y in 0..h {
+                assert_ne!(
+                    pm.pixel(0, y).unwrap().red(),
+                    255,
+                    "left edge white at y={y}, dpi={dpi}"
+                );
+                assert_ne!(
+                    pm.pixel(w - 1, y).unwrap().red(),
+                    255,
+                    "right edge white at y={y}, dpi={dpi}"
+                );
+            }
         }
     }
 }
