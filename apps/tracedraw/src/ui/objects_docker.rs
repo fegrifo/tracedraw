@@ -2575,7 +2575,10 @@ fn apply(app: &mut App, ui: &Ui, mut act: Actions) {
         app.dialog = crate::ui::dialogs::Dialog::RenameLayer { layer, name };
     }
     if let Some(name) = act.rename_page {
-        app.dialog = crate::ui::dialogs::Dialog::RenamePage { name };
+        app.dialog = crate::ui::dialogs::Dialog::RenamePage {
+            page: app.page,
+            name,
+        };
     }
     if let Some((shape, name)) = act.rename_object {
         app.dialog = crate::ui::dialogs::Dialog::RenameObject { shape, name };

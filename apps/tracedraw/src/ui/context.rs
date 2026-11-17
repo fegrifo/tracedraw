@@ -779,7 +779,10 @@ fn page_menu(app: &mut App, ui: &mut Ui, p: tracedraw_core::Point, close: &mut b
             .page(app.page)
             .map(|pg| pg.name.clone())
             .unwrap_or_default();
-        app.dialog = Dialog::RenamePage { name };
+        app.dialog = Dialog::RenamePage {
+            page: app.page,
+            name,
+        };
     }
     if ci(ui, close, "menu.layout.page_size", "", true) {
         app.dialog = crate::ui::dialogs::page_size_dialog(app);

@@ -1660,6 +1660,7 @@ pub struct App {
     pub page_sorter: bool,
     /// View > Multipage View: every page laid out beside the current one.
     pub multipage: bool,
+    pub multipage_columns: usize,
     /// The wheel zoom still gliding (#1648).
     pub zoom_glide: crate::view_motion::ZoomGlide,
     /// Help > Benchmark: the run going on or just finished.
@@ -3212,6 +3213,7 @@ impl App {
             preview_selected_only: false,
             page_sorter: false,
             multipage: false,
+            multipage_columns: crate::multipage::COLUMNS,
             zoom_glide: Default::default(),
             benchmark: Default::default(),
             pan_inertia: Default::default(),

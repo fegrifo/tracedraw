@@ -5291,7 +5291,7 @@ pub fn parse_page_range(range: &str, count: usize) -> Vec<usize> {
 
 /// The space between pages in the Multipage View when a drawing sets
 /// none, mm.
-pub const DEFAULT_PAGE_SPACING: f64 = 30.0;
+pub const DEFAULT_PAGE_SPACING: f64 = 60.0;
 
 /// The largest space between pages the Multipage View takes, mm.
 pub const MAX_PAGE_SPACING: f64 = 1000.0;
@@ -8420,13 +8420,13 @@ mod tests {
     }
 
     #[test]
-    fn the_page_spacing_defaults_to_30_mm_and_round_trips() {
+    fn the_page_spacing_defaults_to_60_mm_and_round_trips() {
         // A drawing saved before the setting existed.
         let m: Metadata = serde_json::from_str(r#"{"author":"a"}"#).unwrap();
         assert_eq!(m.page_spacing, None);
         assert_eq!(m.page_spacing(), DEFAULT_PAGE_SPACING);
-        assert_eq!(DEFAULT_PAGE_SPACING, 30.0);
-        assert_eq!(Document::default().metadata.page_spacing(), 30.0);
+        assert_eq!(DEFAULT_PAGE_SPACING, 60.0);
+        assert_eq!(Document::default().metadata.page_spacing(), 60.0);
         // Unset, it stays out of the file.
         let json = serde_json::to_string(&m).unwrap();
         assert!(!json.contains("page_spacing"), "{json}");

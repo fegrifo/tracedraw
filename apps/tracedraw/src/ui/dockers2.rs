@@ -2790,7 +2790,79 @@ fn symbols(app: &mut App, ui: &mut Ui) {
     }
 }
 
+const MAX_PAGE_THUMBS: usize = 64;
+const MAX_PAGE_THUMB_RENDERS_PER_FRAME: usize = 2;
+const PAGE_THUMB_DEFAULT: f32 = 42.0;
+const PAGE_THUMB_MIN: f32 = 28.0;
+const PAGE_THUMB_MAX: f32 = 112.0;
+const PAGE_THUMB_RENDER_PX: f64 = 84.0;
+
+#[derive(Clone)]
+struct PageThumbEntry {
+    revision: u64,
+    last_frame: u64,
+    tex: egui::TextureHandle,
+}
+
+#[derive(Clone)]
+struct PageThumbCache {
+    frame: u64,
+    thumb_h: f32,
+    entries: std::collections::HashMap<tracedraw_core::PageId, PageThumbEntry>,
+}
+
+impl Default for PageThumbCache {
+    fn default() -> Self {
+        Self {
+            frame: 0,
+            thumb_h: PAGE_THUMB_DEFAULT,
+            entries: std::collections::HashMap::new(),
+        }
+    }
+}
+
+fn page_icon_button(
+    ui: &mut Ui,
+    enabled: bool,
+    active: bool,
+    glyph: crate::ui::menu_glyphs::Glyph,
+    tip_key: &str,
+) -> egui::Response {
+    let size = egui::vec2(28.0, 28.0);
+    let (rect, resp) = ui.allocate_exact_size(
+        size,
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    let bg = if active {
+        Tokens::tool_active()
+    } else if enabled && resp.hovered() {
+        ui.visuals().widgets.hovered.weak_bg_fill
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    if bg != egui::Color32::TRANSPARENT {
+        ui.painter().rect_filled(rect, 3.0, bg);
+    }
+    let color = if !enabled {
+        Tokens::text_dim()
+    } else if active {
+        Tokens::ACCENT
+    } else {
+        Tokens::text()
+    };
+    crate::ui::menu_glyphs::draw(ui.painter(), rect.shrink(4.0), glyph, color);
+    resp.rich_tip(crate::ui::tips::keyed(tip_key))
+        .rich_disabled_tip(crate::ui::tips::keyed(tip_key))
+}
+
 fn pages(app: &mut App, ui: &mut Ui) {
+    use crate::ui::dialogs::Dialog;
+    use crate::ui::menu_glyphs::Glyph;
+
     let pages: Vec<(tracedraw_core::PageId, String, tracedraw_core::Size)> = app
         .doc()
         .pages
@@ -2798,78 +2870,359 @@ fn pages(app: &mut App, ui: &mut Ui) {
         .map(|p| (p.id, p.name.clone(), p.size))
         .collect();
     let n = pages.len();
+    let mp_settings_open = matches!(app.dialog, Dialog::MultipageSettings { .. });
+
     ui.horizontal(|ui| {
-        if ui
-            .button(tr("menu.layout.insert_page"))
-            .rich_tip(crate::ui::tips::keyed("menu.layout.insert_page"))
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if page_icon_button(ui, true, false, Glyph::PageInsert, "menu.layout.insert_page")
             .clicked()
         {
             app.add_page();
         }
-        if ui
-            .add_enabled(n > 1, egui::Button::new(tr("menu.layout.delete_page")))
-            .rich_tip(crate::ui::tips::keyed("menu.layout.delete_page"))
-            .rich_disabled_tip(crate::ui::tips::keyed("menu.layout.delete_page"))
-            .clicked()
+        if page_icon_button(
+            ui,
+            n > 1,
+            false,
+            Glyph::PageDelete,
+            "menu.layout.delete_page",
+        )
+        .clicked()
         {
             app.ask_delete_page();
         }
-        if ui
-            .button(tr("menu.layout.duplicate_page"))
-            .rich_tip(crate::ui::tips::keyed("menu.layout.duplicate_page"))
-            .clicked()
+        if page_icon_button(
+            ui,
+            true,
+            false,
+            Glyph::PageDuplicate,
+            "menu.layout.duplicate_page",
+        )
+        .clicked()
         {
-            app.dialog = crate::ui::dialogs::Dialog::duplicate_page();
+            app.dialog = Dialog::duplicate_page();
         }
-        if ui
-            .selectable_label(app.page_sorter, tr("menu.view.page_sorter"))
-            .rich_tip(crate::ui::tips::keyed("menu.view.page_sorter"))
-            .clicked()
+        if page_icon_button(
+            ui,
+            true,
+            app.multipage,
+            Glyph::Multipage,
+            "menu.view.multipage",
+        )
+        .clicked()
         {
-            app.page_sorter = !app.page_sorter;
+            app.set_multipage(!app.multipage);
+        }
+        if page_icon_button(
+            ui,
+            app.multipage,
+            app.multipage && mp_settings_open,
+            Glyph::DocOptions,
+            "docker.multipage_settings",
+        )
+        .clicked()
+        {
+            app.dialog = Dialog::MultipageSettings {
+                spacing: app.units.from_mm(app.page_spacing()),
+                columns: app.multipage_columns,
+            };
         }
     });
-    for (i, (id, name, size)) in pages.iter().enumerate() {
-        ui.horizontal(|ui| {
-            let active = *id == app.page;
-            if ui
-                .selectable_label(active, format!("{}. {name}", i + 1))
-                .rich_tip_with(|| format!("{name}\n{}", tr("docker.page_list_desc")))
-                .clicked()
-            {
-                app.goto_page(i);
+    ui.separator();
+
+    let cache_id = egui::Id::new("pages_docker_thumb_cache");
+    let drag_id = egui::Id::new("pages_docker_drag_page");
+    let rev = app.engine.revision();
+    let mut cache = ui
+        .ctx()
+        .data(|d| d.get_temp::<PageThumbCache>(cache_id))
+        .unwrap_or_default();
+    cache.frame = cache.frame.wrapping_add(1);
+    let now_frame = cache.frame;
+    cache
+        .entries
+        .retain(|id, _| pages.iter().any(|(pid, _, _)| pid == id));
+
+    let mut dragged_idx: Option<usize> = ui.ctx().data(|d| d.get_temp(drag_id));
+    let mut drop_target: Option<usize> = None;
+    let mut renders_left = MAX_PAGE_THUMB_RENDERS_PER_FRAME;
+    let mut doc_for_render: Option<tracedraw_core::Document> = None;
+    let mut goto: Option<usize> = None;
+    let mut move_page: Option<(tracedraw_core::PageId, usize)> = None;
+    let mut action_on_page: Option<(usize, u8)> = None;
+
+    // Ctrl + scroll over the list resizes the page thumbnails within bounds.
+    // Egui folds Ctrl+wheel into `zoom_delta()`; also check raw wheel events
+    // with ctrl/command so both trackpad and discrete mouse wheels work.
+    let list_rect = ui.available_rect_before_wrap();
+    if ui.rect_contains_pointer(list_rect) {
+        let delta = ui.input(|i| {
+            let z = i.zoom_delta();
+            if (z - 1.0).abs() > 1e-4 {
+                (z - 1.0) * 60.0
+            } else if i.modifiers.ctrl || i.modifiers.command {
+                i.events
+                    .iter()
+                    .filter_map(|ev| match ev {
+                        egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                        _ => None,
+                    })
+                    .sum::<f32>()
+                    * 8.0
+            } else {
+                0.0
             }
-            dim(
-                ui,
-                format!(
-                    "{} x {}",
+        });
+        if delta != 0.0 {
+            cache.thumb_h = (cache.thumb_h + delta).clamp(PAGE_THUMB_MIN, PAGE_THUMB_MAX);
+        }
+    }
+    let thumb_h = cache.thumb_h.clamp(PAGE_THUMB_MIN, PAGE_THUMB_MAX);
+    let row_h = thumb_h + 10.0;
+    let footer_h = 28.0;
+    let scroll_max_h = (ui.available_height() - footer_h).max(row_h);
+
+    egui::ScrollArea::vertical()
+        .max_height(scroll_max_h)
+        .auto_shrink([false, false])
+        .show_rows(ui, row_h, n, |ui, range| {
+            for i in range {
+                let (id, name, size) = &pages[i];
+                ui.push_id(id.raw(), |ui| {
+                let active = *id == app.page;
+                let row_w = ui.available_width().max(120.0);
+                let (row_rect, resp) = ui.allocate_exact_size(
+                    egui::vec2(row_w, row_h),
+                    egui::Sense::click_and_drag(),
+                );
+                let bg = if active {
+                    Tokens::tool_active()
+                } else if resp.hovered() {
+                    ui.visuals().widgets.hovered.weak_bg_fill
+                } else {
+                    egui::Color32::TRANSPARENT
+                };
+                if bg != egui::Color32::TRANSPARENT {
+                    ui.painter().rect_filled(row_rect, 4.0, bg);
+                }
+
+                // Thumbnail (bounded lazy render, at most 2 per frame).
+                let thumb_w = (thumb_h as f64 * size.width / size.height.max(1e-6))
+                    .clamp(16.0, thumb_h as f64 * 1.6) as f32;
+                let thumb_rect = egui::Rect::from_min_size(
+                    egui::pos2(
+                        row_rect.left() + 4.0,
+                        row_rect.center().y - thumb_h * 0.5,
+                    ),
+                    egui::vec2(thumb_w, thumb_h),
+                );
+                let stale = cache
+                    .entries
+                    .get(id)
+                    .is_none_or(|e| e.revision != rev);
+                if stale && renders_left > 0 {
+                    renders_left -= 1;
+                    let doc = doc_for_render.get_or_insert_with(|| app.doc().clone());
+                    let dpi = (PAGE_THUMB_RENDER_PX / (size.height.max(1e-6) / 25.4))
+                        .clamp(4.0, 72.0);
+                    if let Some(pm) = tracedraw_render::render_page_image(doc, *id, dpi) {
+                        let image = egui::ColorImage::from_rgba_premultiplied(
+                            [pm.width() as usize, pm.height() as usize],
+                            pm.data(),
+                        );
+                        let tex = ui.ctx().load_texture(
+                            format!("page_docker_thumb_{}", id.raw()),
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        cache.entries.insert(
+                            *id,
+                            PageThumbEntry {
+                                revision: rev,
+                                last_frame: now_frame,
+                                tex,
+                            },
+                        );
+                    }
+                } else if stale {
+                    ui.ctx().request_repaint();
+                }
+
+                ui.painter().rect_filled(
+                    thumb_rect,
+                    2.0,
+                    if active {
+                        Tokens::ACCENT
+                    } else {
+                        Tokens::panel_dark()
+                    },
+                );
+                if let Some(entry) = cache.entries.get_mut(id) {
+                    entry.last_frame = now_frame;
+                    ui.painter().image(
+                        entry.tex.id(),
+                        thumb_rect.shrink(1.0),
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+
+                // Page title and dimensions.
+                let text_x = thumb_rect.right() + 8.0;
+                let title = format!("{}. {name}", i + 1);
+                ui.painter().text(
+                    egui::pos2(text_x, row_rect.center().y - 7.0),
+                    egui::Align2::LEFT_CENTER,
+                    title,
+                    egui::FontId::proportional(12.5),
+                    if active { Tokens::ACCENT } else { Tokens::text() },
+                );
+                let dims = format!(
+                    "{} x {} {}",
                     app.units.from_mm(size.width).round(),
-                    app.units.from_mm(size.height).round()
-                ),
-            );
-            if i > 0
-                && ui
-                    .small_button("\u{23F6}")
-                    .rich_tip(crate::ui::tips::keyed("docker.page_move_up"))
-                    .clicked()
-            {
-                app.run(Command::MovePage {
-                    page: *id,
-                    to: i - 1,
+                    app.units.from_mm(size.height).round(),
+                    app.units.short(),
+                );
+                ui.painter().text(
+                    egui::pos2(text_x, row_rect.center().y + 9.0),
+                    egui::Align2::LEFT_CENTER,
+                    dims,
+                    egui::FontId::proportional(10.5),
+                    Tokens::text_dim(),
+                );
+
+                // Drag-and-drop reorder state.
+                if resp.drag_started() {
+                    dragged_idx = Some(i);
+                }
+                if let Some(from) = dragged_idx {
+                    if let Some(pos) = ui.ctx().pointer_latest_pos() {
+                        if row_rect.contains(pos) && from != i {
+                            drop_target = Some(i);
+                            let line_y = if i < from {
+                                row_rect.top()
+                            } else {
+                                row_rect.bottom()
+                            };
+                            ui.painter().line_segment(
+                                [
+                                    egui::pos2(row_rect.left() + 2.0, line_y),
+                                    egui::pos2(row_rect.right() - 2.0, line_y),
+                                ],
+                                egui::Stroke::new(2.0, Tokens::ACCENT),
+                            );
+                        }
+                    }
+                }
+
+                if resp.clicked() {
+                    goto = Some(i);
+                }
+
+                resp.clone()
+                    .rich_tip_with(|| format!("{name}\n{}", tr("docker.page_list_desc")));
+
+                resp.context_menu(|ui| {
+                    if ui.button(tr("menu.layout.rename_page")).clicked() {
+                        action_on_page = Some((i, 0));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button(tr("docker.page_duplicate_with_contents")).clicked() {
+                        action_on_page = Some((i, 1));
+                        ui.close();
+                    }
+                    if ui
+                        .button(tr("docker.page_duplicate_without_contents"))
+                        .clicked()
+                    {
+                        action_on_page = Some((i, 2));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button(tr("page_tab.insert_after")).clicked() {
+                        action_on_page = Some((i, 3));
+                        ui.close();
+                    }
+                    if ui.button(tr("page_tab.insert_before")).clicked() {
+                        action_on_page = Some((i, 4));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(n > 1, egui::Button::new(tr("page_tab.delete")))
+                        .clicked()
+                    {
+                        action_on_page = Some((i, 5));
+                        ui.close();
+                    }
                 });
-            }
-            if i + 1 < n
-                && ui
-                    .small_button("\u{23F7}")
-                    .rich_tip(crate::ui::tips::keyed("docker.page_move_down"))
-                    .clicked()
-            {
-                app.run(Command::MovePage {
-                    page: *id,
-                    to: i + 1,
                 });
             }
         });
+
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(tr("docker.page_thumb_size"));
+        ui.add(crate::ui::Rail(
+            egui::Slider::new(&mut cache.thumb_h, PAGE_THUMB_MIN..=PAGE_THUMB_MAX)
+                .show_value(false),
+        ))
+        .rich_tip(crate::ui::tips::keyed("docker.page_thumb_size"));
+    });
+
+    if let Some(from) = dragged_idx {
+        if ui.input(|i| i.pointer.any_released()) {
+            if let Some(to) = drop_target {
+                move_page = Some((pages[from].0, to));
+            }
+            dragged_idx = None;
+        }
+    }
+    ui.ctx().data_mut(|d| {
+        if let Some(from) = dragged_idx {
+            d.insert_temp(drag_id, from);
+        } else {
+            d.remove::<usize>(drag_id);
+        }
+    });
+
+    while cache.entries.len() > MAX_PAGE_THUMBS {
+        let Some(oldest) = cache
+            .entries
+            .iter()
+            .min_by_key(|(_, e)| e.last_frame)
+            .map(|(k, _)| *k)
+        else {
+            break;
+        };
+        cache.entries.remove(&oldest);
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(cache_id, cache));
+
+    if let Some(i) = goto {
+        app.goto_page(i);
+    }
+    if let Some((page, to)) = move_page {
+        app.run(Command::MovePage { page, to });
+    }
+    if let Some((i, act)) = action_on_page {
+        let target_id = pages[i].0;
+        app.goto_page(i);
+        match act {
+            0 => {
+                let name = pages.get(i).map(|(_, n, _)| n.clone()).unwrap_or_default();
+                app.dialog = Dialog::RenamePage {
+                    page: target_id,
+                    name,
+                };
+            }
+            1 => app.duplicate_page(false, true),
+            2 => app.duplicate_page(false, false),
+            3 => app.insert_page(true),
+            4 => app.insert_page(false),
+            5 => app.ask_delete_page(),
+            _ => {}
+        }
     }
 }
 
@@ -3885,5 +4238,44 @@ mod corners_docker_tests {
         ));
         click(&mut app, "dialog.preview");
         assert!(app.settings.corners_preview, "and back on");
+    }
+
+    #[test]
+    fn pages_docker_caches_bounded_thumbs_and_toggles_multipage() {
+        let mut app = App::headless();
+        let ctx = egui::Context::default();
+        // Add 4 extra pages (5 total).
+        for _ in 0..4 {
+            app.add_page();
+        }
+        assert_eq!(app.doc().pages.len(), 5);
+        // Frame 1: renders at most MAX_PAGE_THUMB_RENDERS_PER_FRAME thumbnails.
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            pages(&mut app, ui);
+        });
+        out.textures_delta.clear();
+        let cache_id = egui::Id::new("pages_docker_thumb_cache");
+        let c1 = ctx
+            .data(|d| d.get_temp::<PageThumbCache>(cache_id))
+            .expect("cache");
+        assert!(c1.entries.len() <= MAX_PAGE_THUMB_RENDERS_PER_FRAME);
+
+        // Additional frames finish populating the visible thumbnails without re-rendering cached ones.
+        for _ in 0..4 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                pages(&mut app, ui);
+            });
+            out.textures_delta.clear();
+        }
+        let c2 = ctx
+            .data(|d| d.get_temp::<PageThumbCache>(cache_id))
+            .expect("cache");
+        assert_eq!(c2.entries.len(), 5);
+        assert!(c2.entries.len() <= MAX_PAGE_THUMBS);
+
+        // Multipage toggle works.
+        assert!(!app.multipage);
+        app.set_multipage(true);
+        assert!(app.multipage);
     }
 }

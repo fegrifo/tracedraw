@@ -3173,7 +3173,10 @@ pub(crate) fn layout_menu(app: &mut App, ui: &mut Ui) {
             .page(app.page)
             .map(|p| p.name.clone())
             .unwrap_or_default();
-        app.dialog = Dialog::RenamePage { name };
+        app.dialog = Dialog::RenamePage {
+            page: app.page,
+            name,
+        };
     }
     if item(ui, "menu.layout.delete_page", "", app.doc().pages.len() > 1) {
         app.ask_delete_page();

@@ -56,6 +56,7 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::RenamePage { .. } => "pages-layout/pages#rename-page",
         Dialog::GoToPage { .. } => "pages-layout/pages#go-to-page",
         Dialog::PageSpacing { .. } => "pages-layout/multipage-view#page-spacing",
+        Dialog::MultipageSettings { .. } => "pages-layout/multipage-view#page-spacing",
         Dialog::OutlineOffset { .. } => "lines-shapes/shaping#outline-offset",
         Dialog::GatherPages { .. } => "pages-layout/pages",
         Dialog::MultipagePages { .. } => "pages-layout/multipage-view#choose-pages",

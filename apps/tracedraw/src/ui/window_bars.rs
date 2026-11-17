@@ -774,7 +774,10 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
             .get(i)
             .map(|p| p.name.clone())
             .unwrap_or_default();
-        app.dialog = crate::ui::dialogs::Dialog::RenamePage { name };
+        app.dialog = crate::ui::dialogs::Dialog::RenamePage {
+            page: app.page,
+            name,
+        };
     }
 }
 
@@ -857,7 +860,10 @@ pub(crate) fn apply_page_tab_action(app: &mut App, action: PageTabAction) {
                 .page(app.page)
                 .map(|p| p.name.clone())
                 .unwrap_or_default();
-            app.dialog = Dialog::RenamePage { name };
+            app.dialog = Dialog::RenamePage {
+                page: app.page,
+                name,
+            };
         }
         PageTabAction::InsertBefore => app.insert_page(false),
         PageTabAction::InsertAfter => app.insert_page(true),

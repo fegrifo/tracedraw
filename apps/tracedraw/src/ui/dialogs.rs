@@ -1291,6 +1291,7 @@ pub enum Dialog {
         vertical: bool,
     },
     RenamePage {
+        page: tracedraw_core::PageId,
         name: String,
     },
     GoToPage {
@@ -1300,6 +1301,12 @@ pub enum Dialog {
     /// Multipage View, in the document's units.
     PageSpacing {
         value: f64,
+    },
+    /// Multipage View settings opened from the Pages docker: spacing
+    /// (in the document's units) and columns per row.
+    MultipageSettings {
+        spacing: f64,
+        columns: usize,
     },
     /// Layout > Gather Pages on Page 1 (#2098): the gap between the
     /// pages' objects in the drawing's units, whether the first page
@@ -2099,7 +2106,8 @@ pub fn show(app: &mut App, ctx: &Context) {
                 }
             });
         }
-        Dialog::RenamePage { name } => {
+        Dialog::RenamePage { page, name } => {
+            let target = *page;
             window(ctx, tr("dialog.rename_page")).show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(tr("dialog.page_name"));
@@ -2107,9 +2115,8 @@ pub fn show(app: &mut App, ctx: &Context) {
                         .rich_tip(crate::ui::tips::keyed("dialog.page_name"));
                 });
                 if ok_cancel(ui, &mut close) {
-                    let page = app.page;
                     app.run(Command::RenamePage {
-                        page,
+                        page: target,
                         name: name.clone(),
                     });
                 }
@@ -2149,6 +2156,48 @@ pub fn show(app: &mut App, ctx: &Context) {
                 });
                 if ok_cancel(ui, &mut close) {
                     app.set_page_spacing(u.to_mm(*value));
+                }
+            });
+        }
+        Dialog::MultipageSettings { spacing, columns } => {
+            let u = app.units;
+            window(ctx, tr("docker.multipage_settings")).show(ctx, |ui| {
+                egui::Grid::new("multipage_settings_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label(tr("options.page_spacing"));
+                        ui.add(
+                            crate::ui::field::NumField::new(spacing)
+                                .range(0.0..=u.from_mm(tracedraw_core::document::MAX_PAGE_SPACING))
+                                .speed(u.from_mm(1.0).max(0.01))
+                                .suffix(format!(" {}", u.short())),
+                        )
+                        .rich_tip(crate::ui::tips::pair(
+                            "dialog.page_spacing_label",
+                            "dialog.page_spacing_desc",
+                        ));
+                        ui.end_row();
+
+                        ui.label(tr("docker.multipage_columns"));
+                        let mut cols = (*columns).clamp(1, 12) as f64;
+                        if ui
+                            .add(
+                                crate::ui::field::NumField::new(&mut cols)
+                                    .range(1.0..=12.0)
+                                    .fixed_decimals(0)
+                                    .speed(0.1),
+                            )
+                            .rich_tip(crate::ui::tips::keyed("docker.multipage_columns"))
+                            .changed()
+                        {
+                            *columns = (cols.round() as usize).clamp(1, 12);
+                        }
+                        ui.end_row();
+                    });
+                if ok_cancel(ui, &mut close) {
+                    app.set_page_spacing(u.to_mm(*spacing));
+                    app.multipage_columns = (*columns).clamp(1, 12);
                 }
             });
         }
@@ -8754,10 +8803,15 @@ pub(crate) mod tests {
             Dialog::BitmapPaletted(Default::default()),
             Dialog::RemoveBackground(Default::default()),
             Dialog::RenamePage {
+                page: tracedraw_core::PageId(1),
                 name: "Page".into(),
             },
             Dialog::GoToPage { page: 1 },
             Dialog::PageSpacing { value: 30.0 },
+            Dialog::MultipageSettings {
+                spacing: 60.0,
+                columns: 4,
+            },
             Dialog::OutlineOffset {
                 distance: 2.0,
                 outside: true,
@@ -9238,7 +9292,7 @@ pub(crate) mod tests {
         assert!((app.page_spacing() - 15.0).abs() < 1e-9);
         assert_eq!(app.doc().metadata.page_spacing, Some(15.0));
         app.undo();
-        assert_eq!(app.page_spacing(), 30.0);
+        assert_eq!(app.page_spacing(), 60.0);
     }
 
     /// Object > Outline Offset (#2622): OK draws a curve the typed distance

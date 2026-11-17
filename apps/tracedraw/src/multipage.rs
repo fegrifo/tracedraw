@@ -34,12 +34,22 @@ pub const COLUMNS: usize = 4;
 /// The current page is at the origin; an unknown `active` keeps the grid
 /// where the first page is at the origin.
 pub fn layout(pages: &[(PageId, Size)], active: PageId, gap: f64) -> Vec<(PageId, Rect)> {
+    layout_with_columns(pages, active, gap, COLUMNS)
+}
+
+/// Like [`layout`], with an explicit column count (at least 1).
+pub fn layout_with_columns(
+    pages: &[(PageId, Size)],
+    active: PageId,
+    gap: f64,
+    columns: usize,
+) -> Vec<(PageId, Rect)> {
     let gap = if gap.is_finite() { gap.max(0.0) } else { 0.0 };
     let n = pages.len();
     if n == 0 {
         return Vec::new();
     }
-    let cols = n.clamp(1, COLUMNS);
+    let cols = n.clamp(1, columns.max(1));
     let rows = n.div_ceil(cols);
     let mut col_w = vec![0.0f64; cols];
     let mut row_h = vec![0.0f64; rows];
@@ -213,7 +223,7 @@ impl App {
             None => {
                 let kept: Vec<(PageId, Size)> =
                     keep.iter().filter_map(|&i| pages.get(i).copied()).collect();
-                layout(&kept, self.page, gap)
+                layout_with_columns(&kept, self.page, gap, self.multipage_columns)
             }
         }
     }
@@ -728,17 +738,6 @@ pub fn draw_other_papers(app: &App, painter: &Painter, rect: ERect) {
         .filter(|(_, id, _, _)| *id != app.page)
         .map(|(_, _, _, paper)| paper)
         .collect();
-    if app.show_page_shadow {
-        for paper in &papers {
-            painter.rect_filled(
-                paper
-                    .expand(1.0)
-                    .translate(crate::theme::Tokens::PAGE_SHADOW_OFFSET),
-                0.0,
-                crate::theme::Tokens::page_shadow(),
-            );
-        }
-    }
     for paper in &papers {
         painter.rect_filled(*paper, 0.0, crate::theme::Tokens::PAGE);
     }
@@ -857,7 +856,7 @@ pub fn draw_other_pages(
                 painter.rect_stroke(
                     paper,
                     0.0,
-                    egui::Stroke::new(1.0, crate::theme::Tokens::page_border()),
+                    egui::Stroke::new(1.0, crate::theme::Tokens::text_dim()),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -901,19 +900,22 @@ mod tests {
     fn pages_sit_in_a_grid_with_the_current_one_at_the_origin() {
         let ps = pages(6);
         let placed = layout(&ps, PageId(1), GAP_MM);
-        // Four columns, 30 mm apart, then the next row going down.
+        // Four columns, 60 mm apart, then the next row going down.
         assert_eq!(placed[0].1, Rect::new(0.0, 0.0, 100.0, 50.0));
-        assert_eq!(placed[1].1, Rect::new(130.0, 0.0, 230.0, 50.0));
-        assert_eq!(placed[3].1, Rect::new(390.0, 0.0, 490.0, 50.0));
-        assert_eq!(placed[4].1, Rect::new(0.0, -80.0, 100.0, -30.0));
+        assert_eq!(placed[1].1, Rect::new(160.0, 0.0, 260.0, 50.0));
+        assert_eq!(placed[3].1, Rect::new(480.0, 0.0, 580.0, 50.0));
+        assert_eq!(placed[4].1, Rect::new(0.0, -110.0, 100.0, -60.0));
         // Another page current: the same grid, moved so it is at the origin.
         let placed = layout(&ps, PageId(6), GAP_MM);
         assert_eq!(placed[5].1, Rect::new(0.0, 0.0, 100.0, 50.0));
-        assert_eq!(placed[0].1, Rect::new(-130.0, 80.0, -30.0, 130.0));
-        assert_eq!(page_at(&placed, Point::new(-50.0, 100.0)), Some(PageId(1)));
-        assert_eq!(page_at(&placed, Point::new(-20.0, 100.0)), None);
-        assert_eq!(bounds(&placed), Some(Rect::new(-130.0, 0.0, 360.0, 130.0)));
+        assert_eq!(placed[0].1, Rect::new(-160.0, 110.0, -60.0, 160.0));
+        assert_eq!(page_at(&placed, Point::new(-100.0, 130.0)), Some(PageId(1)));
+        assert_eq!(page_at(&placed, Point::new(-20.0, 130.0)), None);
+        assert_eq!(bounds(&placed), Some(Rect::new(-160.0, 0.0, 420.0, 160.0)));
         assert!(layout(&[], PageId(1), GAP_MM).is_empty());
+
+        let two_cols = layout_with_columns(&ps, PageId(1), GAP_MM, 2);
+        assert_eq!(two_cols[2].1, Rect::new(0.0, -110.0, 100.0, -60.0));
     }
 
     /// Pages added one by one go at the next place of a grid of four
@@ -927,8 +929,8 @@ mod tests {
             let after = layout(&pages(n + 1), PageId(1), GAP_MM);
             assert_eq!(after[..n], before[..], "page {} added", n + 1);
             let (r, c) = (n / COLUMNS, n % COLUMNS);
-            let x0 = c as f64 * 130.0;
-            let y0 = -(r as f64) * 80.0;
+            let x0 = c as f64 * (100.0 + GAP_MM);
+            let y0 = -(r as f64) * (50.0 + GAP_MM);
             assert_eq!(after[n].1, Rect::new(x0, y0, x0 + 100.0, y0 + 50.0));
         }
     }
@@ -944,16 +946,16 @@ mod tests {
         // One row: each column as wide as its page, every top lined up
         // with page 1's; the next row (page 5 on) would start below the
         // tallest, page 2.
-        assert_eq!(placed[1].1, Rect::new(130.0, -30.0, 170.0, 50.0));
-        assert_eq!(placed[2].1, Rect::new(200.0, 20.0, 350.0, 50.0));
+        assert_eq!(placed[1].1, Rect::new(160.0, -30.0, 200.0, 50.0));
+        assert_eq!(placed[2].1, Rect::new(260.0, 20.0, 410.0, 50.0));
         let mut five = ps.clone();
         five.push((PageId(4), Size::new(10.0, 10.0)));
         five.push((PageId(5), Size::new(150.0, 30.0)));
         let placed = layout(&five, PageId(1), GAP_MM);
         // Column 0 is now as wide as page 5, which sits a row below page
         // 2's bottom.
-        assert_eq!(placed[1].1, Rect::new(180.0, -30.0, 220.0, 50.0));
-        assert_eq!(placed[4].1, Rect::new(0.0, -90.0, 150.0, -60.0));
+        assert_eq!(placed[1].1, Rect::new(210.0, -30.0, 250.0, 50.0));
+        assert_eq!(placed[4].1, Rect::new(0.0, -120.0, 150.0, -90.0));
     }
 
     #[test]
@@ -1111,12 +1113,12 @@ mod tests {
         // Page 1 on the right of the first spread, at the origin.
         assert_eq!(placed[0].1, Rect::new(0.0, 0.0, 100.0, 50.0));
         // Pages 2 and 3 form the second spread, touching.
-        assert_eq!(placed[1].1, Rect::new(130.0, 0.0, 230.0, 50.0));
-        assert_eq!(placed[2].1, Rect::new(230.0, 0.0, 330.0, 50.0));
+        assert_eq!(placed[1].1, Rect::new(160.0, 0.0, 260.0, 50.0));
+        assert_eq!(placed[2].1, Rect::new(260.0, 0.0, 360.0, 50.0));
         // Pages 4-5 start the next row; page 6 on the left of a spread.
-        assert_eq!(placed[3].1, Rect::new(-100.0, -80.0, 0.0, -30.0));
-        assert_eq!(placed[4].1, Rect::new(0.0, -80.0, 100.0, -30.0));
-        assert_eq!(placed[5].1, Rect::new(130.0, -80.0, 230.0, -30.0));
+        assert_eq!(placed[3].1, Rect::new(-100.0, -110.0, 0.0, -60.0));
+        assert_eq!(placed[4].1, Rect::new(0.0, -110.0, 100.0, -60.0));
+        assert_eq!(placed[5].1, Rect::new(160.0, -110.0, 260.0, -60.0));
         for n in 1..=9 {
             let before = facing_layout(&pages(n), PageId(1), GAP_MM, PageSide::Right);
             let after = facing_layout(&pages(n + 1), PageId(1), GAP_MM, PageSide::Right);
@@ -1126,7 +1128,7 @@ mod tests {
         let left = facing_layout(&ps, PageId(1), GAP_MM, PageSide::Left);
         assert_eq!(left[0].1, Rect::new(0.0, 0.0, 100.0, 50.0));
         assert_eq!(left[1].1, Rect::new(100.0, 0.0, 200.0, 50.0));
-        assert_eq!(left[2].1, Rect::new(230.0, 0.0, 330.0, 50.0));
+        assert_eq!(left[2].1, Rect::new(260.0, 0.0, 360.0, 50.0));
         assert!(facing_layout(&[], PageId(1), GAP_MM, PageSide::Left).is_empty());
     }
 
@@ -1437,7 +1439,7 @@ mod tests {
         app.set_multipage(true);
         let w = app.doc().pages[0].size.width;
         assert_eq!(app.page_spacing(), GAP_MM);
-        assert_eq!(app.multipage_layout()[1].1.x0, w + 30.0);
+        assert_eq!(app.multipage_layout()[1].1.x0, w + 60.0);
         let fit_before = app.fit_rect().width();
         let undo_before = app.engine.undo_label();
         assert!(app.set_page_spacing(5.0));
@@ -1446,7 +1448,7 @@ mod tests {
         let placed = app.multipage_layout();
         assert_eq!(placed[0].1.x0, 0.0, "the current page stays put");
         assert_eq!(placed[1].1.x0, w + 5.0);
-        assert!((app.fit_rect().width() - (fit_before - 25.0)).abs() < 1e-9);
+        assert!((app.fit_rect().width() - (fit_before - 55.0)).abs() < 1e-9);
         // A point in the old gap is on the second page now.
         let p = Point::new(w + 10.0, 1.0);
         assert_eq!(page_at(&placed, p), Some(second));
@@ -1457,8 +1459,8 @@ mod tests {
         // One undo step back to the default.
         assert_ne!(app.engine.undo_label(), undo_before);
         app.undo();
-        assert_eq!(app.page_spacing(), 30.0);
-        assert_eq!(app.multipage_layout()[1].1.x0, w + 30.0);
+        assert_eq!(app.page_spacing(), 60.0);
+        assert_eq!(app.multipage_layout()[1].1.x0, w + 60.0);
         // Out of range values are kept in range.
         assert!(app.set_page_spacing(-3.0));
         assert_eq!(app.page_spacing(), 0.0);

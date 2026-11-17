@@ -2756,7 +2756,7 @@ mod tests {
         // Settings saved before the field existed keep the default.
         let old: super::DocumentDefaults = serde_json::from_str("{}").unwrap();
         old.apply(&mut doc);
-        assert_eq!(doc.metadata.page_spacing(), 30.0);
+        assert_eq!(doc.metadata.page_spacing(), 60.0);
         doc.metadata.page_spacing = Some(10.0);
         let saved = super::DocumentDefaults::of(&doc);
         let json = serde_json::to_string(&saved).unwrap();
