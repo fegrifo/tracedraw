@@ -1806,6 +1806,13 @@ impl App {
         }
     }
 
+    pub fn can_selected_segments_to_line(&self) -> bool {
+        self.node_selection.iter().any(|&(id, i)| {
+            self.path_of(id)
+                .is_some_and(|(path, _, _)| nodes::can_to_line(&path, i))
+        })
+    }
+
     pub fn selected_segments_to_line(&mut self) {
         self.for_each_selected_node("To Line", nodes::to_line);
     }
@@ -2947,6 +2954,59 @@ mod bitmap_node_tests {
             radius: 0.0,
             corners: None,
         }));
+    }
+
+    #[test]
+    fn to_line_enabled_only_for_curve_segments_and_shift_b_breaks() {
+        let mut app = App::headless();
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((20.0, 0.0));
+        path.curve_to((30.0, 10.0), (40.0, 10.0), (50.0, 0.0));
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path,
+                closed: false,
+            })
+            .expect("path");
+        app.tool = crate::tools::Tool::Shape;
+        app.select(vec![id]);
+
+        // Straight segment node: ToLine cannot change anything.
+        app.node_selection = vec![(id, 1)];
+        assert!(!app.can_selected_segments_to_line());
+
+        // Curve segment node: ToLine can straighten it.
+        app.node_selection = vec![(id, 2)];
+        assert!(app.can_selected_segments_to_line());
+
+        // Shift+B breaks the curve at the selected interior node.
+        app.node_selection = vec![(id, 1)];
+        let ctx = crate::theme::ui_context();
+        let key = egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        };
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                events: vec![key],
+                ..Default::default()
+            },
+            |ui| app.keyboard(ui.ctx()),
+        );
+        out.textures_delta.clear();
+        let ShapeKind::Path { path: after, .. } = &app.doc().shape(id).unwrap().1.kind else {
+            panic!("expected path");
+        };
+        let moves = after
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
+            .count();
+        assert_eq!(moves, 2, "Shift+Q should split the subpath at the node");
     }
 }
 

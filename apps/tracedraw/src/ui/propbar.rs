@@ -869,9 +869,11 @@ fn draw_node_pic(painter: &Painter, r: Rect, pic: Pic, color: Color32) {
             node(6.7, 6.7, true);
         }
         Pic::ReverseDirection => {
-            bow((2.0, 13.5), (13.5, 2.0), 3.5, s);
-            arrow((2.0, 13.5), (-1.0, 1.0));
-            node(13.5, 2.0, true);
+            bow((2.5, 13.0), (13.5, 2.5), 3.0, s);
+            arrow((2.0, 14.0), (-0.43, 0.90));
+            line((2.5, 6.2), (6.2, 2.5), thin);
+            arrow((6.2, 2.5), (1.0, -1.0));
+            node(13.5, 2.5, true);
         }
         Pic::ExtendToClose => {
             bow((1.5, 14.0), (6.0, 9.5), 1.2, s);

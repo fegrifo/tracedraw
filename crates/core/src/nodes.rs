@@ -1066,6 +1066,14 @@ fn segment_element(n: &BezPath, index: usize) -> usize {
 /// start of a closed subpath that is its closing segment, the last one
 /// back onto the start (#1618); a `ClosePath` index (a clicked closing
 /// line) is a line already.
+pub fn can_to_line(path: &BezPath, index: usize) -> bool {
+    let n = normalize(path);
+    matches!(
+        n.elements().get(segment_element(&n, index)),
+        Some(PathEl::CurveTo(..))
+    )
+}
+
 pub fn to_line(path: &BezPath, index: usize) -> BezPath {
     let n = normalize(path);
     let mut els: Vec<PathEl> = n.elements().to_vec();

@@ -3015,50 +3015,87 @@ fn shape_tool_bar(app: &mut App, ui: &mut Ui) {
     let button = |ui: &mut Ui, pic: Pic, tip: &str, enabled: bool, pressed: bool| -> bool {
         pic_button(ui, pic, &tr(tip), enabled, pressed).clicked()
     };
-    if button(ui, Pic::AddNode, "toolbar.add_node_tip", has_nodes, false) {
+    let button_key =
+        |ui: &mut Ui, pic: Pic, tip: &str, key: &str, enabled: bool, pressed: bool| -> bool {
+            let text = format!("{} ({key})", tr(tip));
+            pic_button(ui, pic, &text, enabled, pressed).clicked()
+        };
+    if button_key(ui, Pic::AddNode, "toolbar.add_node_tip", "+", has_nodes, false) {
         app.add_node_midpoints();
     }
-    if button(
+    if button_key(
         ui,
         Pic::DeleteNode,
         "toolbar.delete_node_tip",
+        "- / Del",
         has_nodes,
         false,
     ) {
         app.delete_selected_nodes();
     }
     sep(ui);
-    if button(
+    if button_key(
         ui,
         Pic::JoinNodes,
         "toolbar.join_nodes_tip",
+        "Shift+J",
         app.node_selection.len() == 2,
         false,
     ) {
         app.join_selected_nodes();
     }
-    if button(ui, Pic::BreakCurve, "toolbar.break_tip", has_nodes, false) {
+    if button_key(
+        ui,
+        Pic::BreakCurve,
+        "toolbar.break_tip",
+        "Shift+B",
+        has_nodes,
+        false,
+    ) {
         app.break_selected_nodes();
     }
     sep(ui);
-    if button(ui, Pic::ToLine, "toolbar.to_line_tip", has_nodes, false) {
+    let can_to_line = has_nodes && app.can_selected_segments_to_line();
+    if button_key(
+        ui,
+        Pic::ToLine,
+        "toolbar.to_line_tip",
+        "Shift+L",
+        can_to_line,
+        false,
+    ) {
         app.selected_segments_to_line();
     }
-    if button(ui, Pic::ToCurve, "toolbar.to_curve_tip", has_nodes, false) {
+    if button_key(
+        ui,
+        Pic::ToCurve,
+        "toolbar.to_curve_tip",
+        "Shift+U",
+        has_nodes,
+        false,
+    ) {
         app.selected_segments_to_curve();
     }
     sep(ui);
     let current = app.current_node_type();
-    for (ty, pic, tip) in [
-        (NodeType::Cusp, Pic::NodeCusp, "toolbar.cusp_tip"),
-        (NodeType::Smooth, Pic::NodeSmooth, "toolbar.smooth_tip"),
+    for (ty, pic, tip, key) in [
+        (NodeType::Cusp, Pic::NodeCusp, "toolbar.cusp_tip", "C"),
+        (NodeType::Smooth, Pic::NodeSmooth, "toolbar.smooth_tip", "S"),
         (
             NodeType::Symmetrical,
             Pic::NodeSymmetrical,
             "toolbar.symm_tip",
+            "Y",
         ),
     ] {
-        if button(ui, pic, tip, has_nodes, has_nodes && current == Some(ty)) {
+        if button_key(
+            ui,
+            pic,
+            tip,
+            key,
+            has_nodes,
+            has_nodes && current == Some(ty),
+        ) {
             app.set_selected_node_type(ty);
         }
     }
