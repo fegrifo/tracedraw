@@ -1363,6 +1363,9 @@ pub struct PalettePrefs {
     pub show_document: bool,
     /// The default palette itself (Window > Toolbars, the bars' menu).
     pub show_palette: bool,
+    /// When true (the default), the default palette bar tracks the active
+    /// document's primary color mode (Default CMYK vs Default RGB).
+    pub follow_document_mode: bool,
     /// Rows of swatches the default palette shows (columns docked on a
     /// side), 1 to [`MAX_ROWS`] (#610); [`ROWS_FIT`] for as many as
     /// show every colour (at most [`MAX_ROWS`]).
@@ -1591,6 +1594,7 @@ impl Default for PalettePrefs {
             show_no_color: true,
             show_document: true,
             show_palette: true,
+            follow_document_mode: true,
             rows: 1,
             swatch_size: SWATCH_DEFAULT,
             document_swatch_size: 0,

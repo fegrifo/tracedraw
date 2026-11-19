@@ -4089,7 +4089,10 @@ impl App {
     pub fn run_script(&mut self, src: &str) {
         // A script converted from a macro runs on the macros' object
         // model, as a macro (docs/behavior/vba.md, "Converting macros").
-        if src.trim_start().starts_with(tracedraw_vba::convert::JS_MARKER) {
+        if src
+            .trim_start()
+            .starts_with(tracedraw_vba::convert::JS_MARKER)
+        {
             match tracedraw_vba::convert::js_run_name(src) {
                 Some(name) => self.run_macro_js(src, &name, "Scripts".into()),
                 None => self.scripts_output.push(tr("convert.nothing_to_run")),
@@ -4127,27 +4130,94 @@ impl App {
 
     // ----- palettes -----------------------------------------------------------------------
 
-    /// Window > Color Palettes, the Palette Manager's tick: show palette
-    /// `i` in a bar of its own, or close its bar. The default bar's
-    /// palette gives way to the first palette bar's (whose bar closes);
-    /// the last palette shown stays.
-    pub fn toggle_palette(&mut self, i: usize) {
+    /// Index in [`Self::palettes`] of the built-in palette matching the active
+    /// document's primary color mode (`Default RGB` for RGB drawings,
+    /// `Default CMYK` otherwise).
+    pub fn document_mode_palette_index(&self) -> usize {
+        let key = if self.has_document()
+            && self.doc().metadata.primary_color_mode
+                == tracedraw_core::document::PrimaryColorMode::Rgb
+        {
+            "palette.default_rgb"
+        } else {
+            "palette.default_cmyk"
+        };
+        self.palettes.iter().position(|p| p.key == key).unwrap_or(0)
+    }
+
+    /// Short label ("RGB" or "CMYK") for the active document's color mode.
+    pub fn document_mode_label(&self) -> &'static str {
+        if self.has_document()
+            && self.doc().metadata.primary_color_mode
+                == tracedraw_core::document::PrimaryColorMode::Rgb
+        {
+            "RGB"
+        } else {
+            "CMYK"
+        }
+    }
+
+    /// Ensure the default palette bar matches the active document's primary
+    /// color mode when `follow_document_mode` is enabled.
+    pub fn sync_palette_to_document_mode(&mut self) {
+        if !self.settings.palette.follow_document_mode || !self.settings.main_palette.is_empty() {
+            return;
+        }
+        let target = self.document_mode_palette_index();
+        if self.visible_palettes.first() != Some(&target) {
+            self.rebuild_palette();
+        }
+    }
+
+    /// Whether the unified Document Palette (either docked row or detached
+    /// bar) is currently shown.
+    pub fn document_palette_visible(&self) -> bool {
+        self.settings.palette.show_document || self.extra_palettes.iter().any(|r| r.document)
+    }
+
+    /// Show or hide the unified Document Palette without ever creating a
+    /// duplicate bar.
+    pub fn toggle_document_palette(&mut self) {
+        if self.document_palette_visible() {
+            self.settings.palette.show_document = false;
+            self.settings
+                .palette_bars
+                .retain(|b| b.palette != crate::settings::DOCUMENT_PALETTE);
+            self.rebuild_palette();
+        } else {
+            self.settings.palette.show_document = true;
+        }
+        self.settings.save();
+    }
+
+    /// Show or hide the active document's automatic mode-default palette bar.
+    pub fn toggle_mode_default_palette(&mut self) {
+        self.settings.palette.show_palette = !self.settings.palette.show_palette;
+        if self.settings.palette.show_palette {
+            self.settings.palette.follow_document_mode = true;
+            self.settings.main_palette.clear();
+        }
+        self.rebuild_palette();
+        self.settings.save();
+    }
+
+    /// Whether palette `i` is explicitly pinned by the user in `palette_bars`.
+    pub fn is_palette_pinned(&self, i: usize) -> bool {
+        self.palettes.get(i).is_some_and(|p| {
+            let id = crate::settings::palette_id(p);
+            self.settings.palette_bars.iter().any(|b| b.palette == id)
+        })
+    }
+
+    /// Pin or unpin preset/custom palette `i` as an independent workspace bar.
+    /// If the automatic mode-default bar currently displays the same palette,
+    /// the pinned bar is kept in preferences and deduplicated on screen.
+    pub fn toggle_pinned_palette(&mut self, i: usize) {
         let Some(p) = self.palettes.get(i) else {
             return;
         };
         let id = crate::settings::palette_id(p);
-        if self.visible_palettes.first() == Some(&i) {
-            let Some(k) = self
-                .settings
-                .palette_bars
-                .iter()
-                .position(|b| b.palette != crate::settings::DOCUMENT_PALETTE)
-            else {
-                return;
-            };
-            let bar = self.settings.palette_bars.remove(k);
-            self.settings.main_palette = bar.palette;
-        } else if let Some(k) = self
+        if let Some(k) = self
             .settings
             .palette_bars
             .iter()
@@ -4155,10 +4225,62 @@ impl App {
         {
             self.settings.palette_bars.remove(k);
         } else {
-            self.open_palette_bar(&id);
-            return;
+            let dock = match self.settings.bars.dock(crate::ui::bars::Bar::Palette) {
+                crate::ui::bars::Dock::Floating => crate::ui::bars::Dock::Bottom,
+                d => d,
+            };
+            let k = self.settings.palette_bars.len() as f32;
+            self.settings
+                .palette_bars
+                .push(crate::settings::PaletteBarPrefs {
+                    palette: id,
+                    dock,
+                    pos: [320.0 + 24.0 * k, 420.0 - 24.0 * k],
+                    swatch_size: self.settings.palette.swatch_size,
+                    ..Default::default()
+                });
         }
         self.rebuild_palette();
+        self.settings.save();
+    }
+
+    /// Window > Color Palettes / Palette Manager toggle for palette `i`:
+    /// opens or closes its bar, allowing even the last visible palette to be
+    /// hidden cleanly.
+    pub fn toggle_palette(&mut self, i: usize) {
+        let Some(p) = self.palettes.get(i) else {
+            return;
+        };
+        let id = crate::settings::palette_id(p);
+        if let Some(k) = self
+            .settings
+            .palette_bars
+            .iter()
+            .position(|b| b.palette == id)
+        {
+            self.settings.palette_bars.remove(k);
+            self.rebuild_palette();
+            return;
+        }
+        if self.settings.palette.show_palette && self.visible_palettes.first() == Some(&i) {
+            if !self.settings.palette.follow_document_mode {
+                if let Some(k) = self
+                    .settings
+                    .palette_bars
+                    .iter()
+                    .position(|b| b.palette != crate::settings::DOCUMENT_PALETTE)
+                {
+                    let bar = self.settings.palette_bars.remove(k);
+                    self.settings.main_palette = bar.palette;
+                    self.rebuild_palette();
+                    return;
+                }
+            }
+            self.settings.palette.show_palette = false;
+            self.rebuild_palette();
+            return;
+        }
+        self.open_palette_bar(&id);
     }
 
     /// Open the palette `id` ([`crate::settings::palette_id`], or
@@ -4166,14 +4288,20 @@ impl App {
     /// the default palette is docked (at the bottom while that floats),
     /// with its swatch size. A palette shown already is not opened twice.
     pub fn open_palette_bar(&mut self, id: &str) {
+        let is_doc = id == crate::settings::DOCUMENT_PALETTE;
         let shown = self.settings.palette_bars.iter().any(|b| b.palette == id)
-            || self
-                .visible_palettes
-                .first()
-                .and_then(|i| self.palettes.get(*i))
-                .is_some_and(|p| crate::settings::palette_id(p) == id);
+            || (!is_doc
+                && self.settings.palette.show_palette
+                && self
+                    .visible_palettes
+                    .first()
+                    .and_then(|i| self.palettes.get(*i))
+                    .is_some_and(|p| crate::settings::palette_id(p) == id));
         if shown || id.is_empty() {
             return;
+        }
+        if is_doc {
+            self.settings.palette.show_document = false;
         }
         let dock = match self.settings.bars.dock(crate::ui::bars::Bar::Palette) {
             crate::ui::bars::Dock::Floating => crate::ui::bars::Dock::Bottom,
@@ -4233,11 +4361,14 @@ impl App {
     /// twice keeps its first bar; [`Self::visible_palettes`] follows.
     pub fn rebuild_palette(&mut self) {
         let main_id = self.settings.main_palette.clone();
-        let default = self
-            .palettes
-            .iter()
-            .position(|p| p.key == "palette.default_cmyk")
-            .unwrap_or(0);
+        let default = if self.settings.palette.follow_document_mode {
+            self.document_mode_palette_index()
+        } else {
+            self.palettes
+                .iter()
+                .position(|p| p.key == "palette.default_cmyk")
+                .unwrap_or(0)
+        };
         let main = self.find_palette(&main_id).unwrap_or(default);
         if main == default {
             self.settings.main_palette.clear();
@@ -4257,18 +4388,29 @@ impl App {
         for mut bar in bars {
             bar.sanitize();
             let document = bar.palette == crate::settings::DOCUMENT_PALETTE;
-            let index = if document {
+            let (index, hidden_duplicate) = if document {
                 if rows
                     .iter()
                     .any(|r: &crate::ui::palette::ExtraRow| r.document)
                 {
                     continue;
                 }
-                usize::MAX
+                // Legacy configs could enable both the docked document row and
+                // a detached document bar; keep the single detached bar.
+                self.settings.palette.show_document = false;
+                (usize::MAX, false)
             } else {
                 match self.find_palette(&bar.palette) {
-                    Some(i) if !self.visible_palettes.contains(&i) => i,
-                    Some(_) => continue,
+                    Some(i) => {
+                        if rows
+                            .iter()
+                            .any(|r: &crate::ui::palette::ExtraRow| !r.document && r.index == i)
+                        {
+                            continue;
+                        }
+                        let dup = self.settings.palette.show_palette && i == main;
+                        (i, dup)
+                    }
                     None => {
                         log::warn!("palette bar: no palette {}", bar.palette);
                         continue;
@@ -4284,12 +4426,13 @@ impl App {
                 .get(index)
                 .map(|p| p.colors.clone())
                 .unwrap_or_default();
-            if !document {
+            if !document && !self.visible_palettes.contains(&index) {
                 self.visible_palettes.push(index);
             }
             rows.push(crate::ui::palette::ExtraRow {
                 index,
                 document,
+                hidden_duplicate,
                 rgb: crate::ui::palette::as_rgb(&colors),
                 colors,
                 scroll,

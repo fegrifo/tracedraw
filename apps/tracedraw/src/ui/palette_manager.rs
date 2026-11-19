@@ -796,7 +796,7 @@ fn row_menu(app: &mut App, ui: &mut Ui, i: usize) {
         if item(ui, "palette.open_as_bar", "", true) {
             app.open_palette_bar(&id);
         }
-    } else if item(ui, "palette.close_bar", "", app.visible_palettes.len() > 1) {
+    } else if item(ui, "palette.close_bar", "", true) {
         app.toggle_palette(i);
     }
     sep(ui);
@@ -866,14 +866,14 @@ fn document_section(app: &mut App, ui: &mut Ui) {
     } else if resp.hovered() {
         ui.painter().rect_filled(rect, 3.0, Tokens::tool_hover());
     }
-    let shown = app.settings.palette.show_document;
+    let shown = app.document_palette_visible();
     let eye = Rect::from_min_size(rect.min + vec2(2.0, 4.0), vec2(22.0, 20.0));
     let eye_resp = ui
         .interact(eye, id.with("eye"), Sense::click())
         .rich_tip(tr("palette.document_eye_tip"));
     crate::ui::objects_docker::paint_eye(ui, eye, shown);
     if eye_resp.clicked() {
-        app.settings.palette.show_document = !shown;
+        app.toggle_document_palette();
     }
     let colors: Vec<Color> = if app.has_document() {
         app.doc().palette.clone()

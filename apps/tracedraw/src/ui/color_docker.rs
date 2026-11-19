@@ -14,7 +14,7 @@ use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
 use crate::ui::tips::RichTip;
 use egui::{Color32, Mesh, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2};
-use tracedraw_core::{Color, Command, Fill, ShapeId};
+use tracedraw_core::{Color, Command, Fill};
 
 /// The models the sliders offer, by their names in `Color::convert_to`.
 pub const MODELS: [&str; 7] = ["RGB", "CMYK", "HSB", "HSL", "Lab", "Grayscale", "YIQ"];
@@ -33,6 +33,19 @@ enum View {
     Palette,
 }
 
+/// Which palette the Color docker's palette view displays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorDockerPalette {
+    /// Automatically follows the active document's primary color mode
+    /// (`Default CMYK` or `Default RGB`).
+    #[default]
+    ModeDefault,
+    /// Only the colors currently in the active document's palette.
+    Document,
+    /// A specific preset or custom palette (index into `App::palettes`).
+    Palette(usize),
+}
+
 /// What the docker keeps between frames.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColorDockerState {
@@ -40,11 +53,8 @@ pub struct ColorDockerState {
     pub shown: [bool; 3],
     /// The hue the viewer shows, kept while the color has none (greys).
     pub hue: f32,
-    /// The palette the palette view shows (index into `App::palettes`).
-    pub palette: usize,
-    /// The selection the new color was last taken from, with the fill it
-    /// had then (a fill changed, as by Convert Colors, is taken again).
-    synced: Option<(Vec<ShapeId>, Option<Color>)>,
+    /// The palette the palette view shows.
+    pub palette: ColorDockerPalette,
     /// Spot colours: the tint they are applied at (percent; the inks'
     /// Fill and Outline, a spot swatch of the palette view) and the name
     /// a new ink gets.
@@ -66,48 +76,13 @@ impl Default for ColorDockerState {
         ColorDockerState {
             shown: [true, true, false],
             hue: 0.0,
-            palette: 0,
-            synced: None,
+            palette: ColorDockerPalette::ModeDefault,
             tint: 100.0,
             new_ink: String::new(),
             ink_rename: None,
             lock: false,
             hex: false,
         }
-    }
-}
-
-/// The solid color of the first selected object's fill, if it has one.
-fn selected_fill(app: &App) -> Option<Color> {
-    app.selected_rc().first().and_then(|s| match &s.fill {
-        Fill::Solid(c) => Some(*c),
-        _ => None,
-    })
-}
-
-/// Take the new color from the selection when the selection changed, or
-/// when its fill went to another colour model (Tools > Convert Colors). A
-/// CMYK or RGB fill brings the sliders to its own model, so a fill
-/// converted to RGB shows RGB values, not the CMYK ones of the model the
-/// sliders were in (#1254). A fill changed within its model (a colour
-/// applied, an undo) leaves the new colour as it is.
-fn follow_selection(app: &mut App) {
-    let fill = selected_fill(app);
-    let same = app.color_docker.synced.as_ref().is_some_and(|(sel, f)| {
-        sel.as_slice() == app.selection.as_slice()
-            && f.map(|c| c.model_name()) == fill.map(|c| c.model_name())
-    });
-    app.color_docker.synced = Some((app.selection.clone(), fill));
-    if same {
-        return;
-    }
-    if let Some(c) = fill {
-        if matches!(c, Color::Cmyk { .. } | Color::Rgb { .. }) {
-            if let Some(m) = MODELS.iter().position(|m| *m == c.model_name()) {
-                app.color_model = m;
-            }
-        }
-        set_color(app, c);
     }
 }
 
@@ -120,6 +95,12 @@ fn set_color(app: &mut App, c: Color) {
     if s > 1e-3 {
         app.color_docker.hue = h;
     }
+}
+
+/// Update the Color docker's chosen color from a color sampled by the
+/// Color Eyedropper tool.
+pub fn take_sampled_color(app: &mut App, c: Color) {
+    set_color(app, c);
 }
 
 /// A 28 x 26 picture button, shaded while `on`.
@@ -884,6 +865,31 @@ fn options_menu(app: &mut App, ui: &mut Ui) {
         }
     }
     ui.separator();
+    let mut mode_on = app.settings.palette.show_palette;
+    let mode_label = format!(
+        "{} ({})",
+        tr("palette.show_mode_default"),
+        app.document_mode_label()
+    );
+    if ui
+        .checkbox(&mut mode_on, mode_label)
+        .rich_tip(crate::ui::tips::pair(
+            "palette.show_mode_default",
+            "palette.show_mode_default_desc",
+        ))
+        .changed()
+    {
+        app.toggle_mode_default_palette();
+    }
+    let mut doc_on = app.document_palette_visible();
+    if ui
+        .checkbox(&mut doc_on, app.document_palette_name())
+        .rich_tip(tr("palette.document_eye_tip"))
+        .changed()
+    {
+        app.toggle_document_palette();
+    }
+    ui.separator();
     let mut lock = app.color_docker.lock;
     if ui.checkbox(&mut lock, tr("docker.lock_colors")).changed() {
         app.color_docker.lock = lock;
@@ -965,25 +971,13 @@ fn top_row(app: &mut App, ui: &mut Ui) {
     });
 }
 
-/// The hex row: the new colour's code, typed values applied when the
-/// field is left, and the gamut warning.
+/// The hex row: uses the same buffered hex editor as the F11 color picker
+/// so typing, copying, and pasting hex codes work cleanly, plus the gamut
+/// warning.
 fn hex_row(ui: &mut Ui, c: &mut Color) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(tr("docker.hex"));
-        let mut hex = c.to_hex();
-        if ui
-            .add(egui::TextEdit::singleline(&mut hex).desired_width(64.0))
-            .rich_tip(crate::ui::tips::keyed("docker.hex_color"))
-            .lost_focus()
-        {
-            if let Some(nc) = Color::from_hex(&hex) {
-                if nc.to_hex() != c.to_hex() {
-                    *c = nc;
-                    changed = true;
-                }
-            }
-        }
+        changed = crate::ui::color_picker::hex_field(ui, egui::Id::new("col_docker_hex"), c);
         if !c.in_cmyk_gamut(6.0) {
             gamut_warning(ui).rich_tip(tr("docker.gamut_warning"));
         }
@@ -993,7 +987,6 @@ fn hex_row(ui: &mut Ui, c: &mut Color) -> bool {
 
 /// Draw the docker.
 pub fn color(app: &mut App, ui: &mut Ui) {
-    follow_selection(app);
     top_row(app, ui);
     ui.add_space(4.0);
     let mut c = app.mixer_color;
@@ -1023,21 +1016,24 @@ pub fn color(app: &mut App, ui: &mut Ui) {
     changed |= hex_row(ui, &mut c);
     ui.add_space(4.0);
     if app.color_docker.shown[2] {
+        ui.separator();
+        ui.add_space(4.0);
         if let Some(pc) = palette_view(app, ui) {
             c = pc;
             changed = true;
         }
-        ui.add_space(6.0);
+        ui.add_space(4.0);
     }
     if changed {
         set_color(app, c);
         c = app.mixer_color;
     }
+    ui.separator();
+    ui.add_space(4.0);
     actions(app, ui, c);
-    ui.add_space(6.0);
-    // One Tint control: under the palette's swatches when they show.
-    let tint_shown = app.color_docker.shown[2] && !app.palettes.is_empty();
-    spot_inks(app, ui, c, !tint_shown);
+    ui.add_space(10.0);
+    // Tint applies only to spot inks, so it lives below the Spot Inks section.
+    spot_inks(app, ui, c, true);
 }
 
 /// The text of the button that drops the other actions.
@@ -1056,21 +1052,90 @@ fn eyedropper_button(app: &App, ui: &mut Ui) -> Response {
     )
 }
 
-/// A small text button with a button's frame, so it reads as one and
-/// not as a label (#1485); `enabled` or pale.
+/// A small text button with a button's frame and generous padding so it is
+/// easy to click while keeping compact typography (#1485); `enabled` or pale.
 fn small_action(ui: &mut Ui, enabled: bool, text: &str) -> Response {
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(egui::RichText::new(text).small()),
-    )
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = Vec2::new(10.0, 5.0);
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(egui::RichText::new(text).small()),
+        )
+    })
+    .inner
+}
+
+/// Dedicated icon button for No Fill (`fill = true`) or No Outline
+/// (`fill = false`): a filled swatch or hollow outline frame crossed by a
+/// red diagonal slash.
+fn no_color_button(
+    ui: &mut Ui,
+    id: &'static str,
+    enabled: bool,
+    fill: bool,
+    tip: &str,
+) -> Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(24.0), sense);
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(egui::Id::new(id), rect));
+    let bg = if enabled && resp.hovered() {
+        Tokens::tool_hover()
+    } else {
+        Color32::TRANSPARENT
+    };
+    if bg != Color32::TRANSPARENT {
+        ui.painter().rect_filled(rect, 3.0, bg);
+    }
+    let inner = Rect::from_center_size(rect.center(), Vec2::splat(14.0));
+    let border_col = if enabled {
+        Tokens::icon()
+    } else {
+        Tokens::icon_off()
+    };
+    let slash_col = if enabled {
+        Color32::from_rgb(220, 48, 48)
+    } else {
+        Tokens::icon_off()
+    };
+    if fill {
+        let swatch_bg = if enabled {
+            Color32::WHITE
+        } else {
+            Tokens::panel()
+        };
+        ui.painter().rect_filled(inner, 1.5, swatch_bg);
+        ui.painter().rect_stroke(
+            inner,
+            1.5,
+            Stroke::new(1.1, border_col),
+            egui::StrokeKind::Inside,
+        );
+    } else {
+        // Hollow outline frame so it clearly reads as "No Outline".
+        ui.painter().rect_stroke(
+            inner,
+            1.5,
+            Stroke::new(2.6, border_col),
+            egui::StrokeKind::Inside,
+        );
+    }
+    ui.painter().line_segment(
+        [inner.left_bottom(), inner.right_top()],
+        Stroke::new(1.7, slash_col),
+    );
+    resp.rich_tip(tip).rich_disabled_tip(tip)
 }
 
 /// The bottom strip: the lock, the fill-over-outline swatch, the
-/// eyedropper and the button that drops the other actions (No Fill, No
-/// Outline, Swap Colors, and adding the new colour `c` to the document
-/// palette, the spot inks or the colour styles); under the swatch, Fill
-/// and Outline apply `c` to the selection (both at once while the lock
-/// is on).
+/// eyedropper, dedicated No Fill / No Outline buttons, and the "..." button
+/// for the remaining actions (Swap Colors, Add to Document Palette, Spot
+/// Inks, Color Styles); under the swatch, Fill and Outline apply `c` to the
+/// selection (both at once while the lock is on).
 fn actions(app: &mut App, ui: &mut Ui, c: Color) {
     let has = !app.selection.is_empty();
     let lock = app.color_docker.lock;
@@ -1084,7 +1149,7 @@ fn actions(app: &mut App, ui: &mut Ui, c: Color) {
         if crate::ui::propbar::pic_button(
             ui,
             crate::ui::propbar::Pic::Lock(lock),
-            &crate::ui::tips::keyed("docker.lock_colors"),
+            &crate::ui::tips::pair("docker.lock_colors", "docker.lock_colors_desc"),
             true,
             lock,
         )
@@ -1108,13 +1173,28 @@ fn actions(app: &mut App, ui: &mut Ui, c: Color) {
         if eyedropper_button(app, ui).clicked() {
             app.docker_eyedropper();
         }
+        if no_color_button(ui, "col_no_fill", has, true, &tr("docker.no_fill")).clicked() {
+            app.apply_fill(Fill::None);
+        }
+        if no_color_button(
+            ui,
+            "col_no_outline",
+            has,
+            false,
+            &tr("docker.no_outline_action"),
+        )
+        .clicked()
+        {
+            app.apply_outline_color(None);
+        }
         ui.menu_button(MORE_ACTIONS, |ui| more_actions(app, ui, c, has))
             .response
             .rich_tip(crate::ui::tips::keyed("docker.more_actions"));
     });
+    ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
-        ui.add_space(30.0);
+        ui.add_space(16.0);
         if small_action(ui, has, &tr("docker.fill"))
             .rich_tip(crate::ui::tips::pair(
                 "docker.fill",
@@ -1163,20 +1243,6 @@ fn actions(app: &mut App, ui: &mut Ui, c: Color) {
 
 /// The items of the "..." menu; `has`: something is selected.
 fn more_actions(app: &mut App, ui: &mut Ui, c: Color, has: bool) {
-    if ui
-        .add_enabled(has, egui::Button::new(tr("docker.no_fill")))
-        .clicked()
-    {
-        app.apply_fill(Fill::None);
-        ui.close();
-    }
-    if ui
-        .add_enabled(has, egui::Button::new(tr("docker.no_outline_action")))
-        .clicked()
-    {
-        app.apply_outline_color(None);
-        ui.close();
-    }
     if ui
         .add_enabled(has, egui::Button::new(tr("docker.swap_colors")))
         .clicked()
@@ -1315,9 +1381,6 @@ fn spot_inks(app: &mut App, ui: &mut Ui, current: Color, with_tint: bool) {
             }
         });
     }
-    if with_tint && !inks.is_empty() {
-        tint_row(app, ui);
-    }
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut app.color_docker.new_ink)
@@ -1342,6 +1405,10 @@ fn spot_inks(app: &mut App, ui: &mut Ui, current: Color, with_tint: bool) {
             app.color_docker.new_ink.clear();
         }
     });
+    if with_tint && !inks.is_empty() {
+        ui.add_space(4.0);
+        tint_row(app, ui);
+    }
     if let Some((id, name)) = rename {
         rename_ink(app, id, &name);
     }
@@ -1417,49 +1484,164 @@ pub(crate) fn at_tint(c: Color, t: f32) -> Color {
     }
 }
 
-/// The palette view: the palette chosen in the list, as swatches, and
-/// the tint under them; a click takes the swatch's color (a spot colour
-/// at the tint).
+/// The palette view: lets the user pick from all four palette categories
+/// (active document default, document palette, presets, and custom palettes),
+/// toggle workspace bar visibility directly, and apply swatches at the chosen
+/// tint.
 fn palette_view(app: &mut App, ui: &mut Ui) -> Option<Color> {
-    if app.palettes.is_empty() {
-        return None;
-    }
-    let mut chosen = app.color_docker.palette.min(app.palettes.len() - 1);
-    crate::ui::keynav::ComboBox::from_id_salt("col_palette")
-        .selected_text(tr(app.palettes[chosen].name_key()))
-        .width(ui.available_width().min(240.0))
-        .show_ui(ui, |ui| {
-            for (i, pal) in app.palettes.iter().enumerate() {
+    let mut chosen = match app.color_docker.palette {
+        ColorDockerPalette::Palette(i) if i >= app.palettes.len() => {
+            ColorDockerPalette::ModeDefault
+        }
+        other => other,
+    };
+    let mode_label = format!(
+        "{} ({})",
+        tr("palette.show_mode_default"),
+        app.document_mode_label()
+    );
+    let doc_label = app.document_palette_name();
+    let selected_label = match chosen {
+        ColorDockerPalette::ModeDefault => mode_label.clone(),
+        ColorDockerPalette::Document => doc_label.clone(),
+        ColorDockerPalette::Palette(i) => app.palette_name(i),
+    };
+    let bar_visible = match chosen {
+        ColorDockerPalette::ModeDefault => app.settings.palette.show_palette,
+        ColorDockerPalette::Document => app.document_palette_visible(),
+        ColorDockerPalette::Palette(i) => app.is_palette_pinned(i),
+    };
+    let mut toggle_bar = false;
+    ui.horizontal(|ui| {
+        let eye_w = 24.0;
+        let combo_w = (ui.available_width() - eye_w - 6.0).clamp(90.0, 240.0);
+        crate::ui::keynav::ComboBox::from_id_salt("col_palette")
+            .selected_text(selected_label)
+            .width(combo_w)
+            .show_ui(ui, |ui| {
                 if ui
-                    .selectable_label(chosen == i, tr(pal.name_key()))
+                    .selectable_label(chosen == ColorDockerPalette::ModeDefault, &mode_label)
                     .clicked()
                 {
-                    chosen = i;
+                    chosen = ColorDockerPalette::ModeDefault;
+                }
+                if ui
+                    .selectable_label(chosen == ColorDockerPalette::Document, &doc_label)
+                    .clicked()
+                {
+                    chosen = ColorDockerPalette::Document;
+                }
+                ui.separator();
+                for i in 0..app.palettes.len() {
+                    if !app.palettes[i].builtin {
+                        continue;
+                    }
+                    let label = app.palette_name(i);
+                    if ui
+                        .selectable_label(chosen == ColorDockerPalette::Palette(i), label)
+                        .clicked()
+                    {
+                        chosen = ColorDockerPalette::Palette(i);
+                    }
+                }
+                let has_custom = app.palettes.iter().any(|p| !p.builtin);
+                if has_custom {
+                    ui.separator();
+                    for i in 0..app.palettes.len() {
+                        if app.palettes[i].builtin {
+                            continue;
+                        }
+                        let label = app.palette_name(i);
+                        if ui
+                            .selectable_label(chosen == ColorDockerPalette::Palette(i), label)
+                            .clicked()
+                        {
+                            chosen = ColorDockerPalette::Palette(i);
+                        }
+                    }
+                }
+            })
+            .response
+            .rich_tip(tr("docker.color_palettes"));
+
+        let (eye_rect, eye_resp) = ui.allocate_exact_size(Vec2::new(eye_w, 22.0), Sense::click());
+        if eye_resp.hovered() {
+            ui.painter()
+                .rect_filled(eye_rect, 2.0, Tokens::tool_hover());
+        }
+        crate::ui::objects_docker::paint_eye(ui, eye_rect, bar_visible);
+        if eye_resp.rich_tip(tr("palette.toggle_bar_tip")).clicked() {
+            toggle_bar = true;
+        }
+    });
+    app.color_docker.palette = chosen;
+    if toggle_bar {
+        match chosen {
+            ColorDockerPalette::ModeDefault => app.toggle_mode_default_palette(),
+            ColorDockerPalette::Document => app.toggle_document_palette(),
+            ColorDockerPalette::Palette(i) => app.toggle_pinned_palette(i),
+        }
+    }
+
+    let swatches: Vec<(String, Color)> = match chosen {
+        ColorDockerPalette::ModeDefault => {
+            let idx = app.document_mode_palette_index();
+            app.palettes
+                .get(idx)
+                .map(|p| p.colors.iter().take(512).cloned().collect())
+                .unwrap_or_default()
+        }
+        ColorDockerPalette::Document => {
+            if app.has_document() {
+                app.doc()
+                    .palette
+                    .iter()
+                    .take(512)
+                    .map(|c| {
+                        let name = crate::ui::palette::name_of(app, *c);
+                        let label = if name.is_empty() { c.to_hex() } else { name };
+                        (label, *c)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+        ColorDockerPalette::Palette(i) => app
+            .palettes
+            .get(i)
+            .map(|p| p.colors.iter().take(512).cloned().collect())
+            .unwrap_or_default(),
+    };
+
+    let mut out = None;
+    let cell = 16.0;
+    if swatches.is_empty() && chosen == ColorDockerPalette::Document {
+        ui.label(
+            egui::RichText::new(tr("palette.document_empty"))
+                .color(Tokens::text_dim())
+                .small(),
+        );
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::splat(2.0);
+            for (name, c) in &swatches {
+                let (r, resp) = ui.allocate_exact_size(Vec2::splat(cell), Sense::click());
+                let [cr, cg, cb] = c.to_rgb8();
+                ui.painter()
+                    .rect_filled(r, 0.0, Color32::from_rgb(cr, cg, cb));
+                ui.painter().rect_stroke(
+                    r,
+                    0.0,
+                    Stroke::new(if resp.hovered() { 1.5 } else { 0.5 }, Tokens::icon()),
+                    egui::StrokeKind::Inside,
+                );
+                if resp.rich_tip(name).clicked() {
+                    out = Some(*c);
                 }
             }
         });
-    app.color_docker.palette = chosen;
-    let mut out = None;
-    let cell = 16.0;
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = Vec2::splat(2.0);
-        for (name, c) in app.palettes[chosen].colors.iter().take(512) {
-            let (r, resp) = ui.allocate_exact_size(Vec2::splat(cell), Sense::click());
-            let [cr, cg, cb] = c.to_rgb8();
-            ui.painter()
-                .rect_filled(r, 0.0, Color32::from_rgb(cr, cg, cb));
-            ui.painter().rect_stroke(
-                r,
-                0.0,
-                Stroke::new(if resp.hovered() { 1.5 } else { 0.5 }, Tokens::icon()),
-                egui::StrokeKind::Inside,
-            );
-            if resp.rich_tip(name).clicked() {
-                out = Some(*c);
-            }
-        }
-    });
-    tint_row(app, ui);
+    }
     out.map(|c| at_tint(c, app.color_docker.tint / 100.0))
 }
 
@@ -1901,7 +2083,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_new_color_follows_the_selection() {
+    fn the_new_color_stays_persistent_when_selection_changes() {
         let mut app = App::headless();
         let id = app
             .new_shape(ShapeKind::Rect {
@@ -1910,64 +2092,21 @@ pub(crate) mod tests {
                 corners: None,
             })
             .expect("shape");
-        let red = Color::rgb8(255, 0, 0);
         app.run(Command::SetFill {
             shapes: vec![id],
-            fill: Fill::Solid(red),
+            fill: Fill::Solid(Color::rgb8(255, 0, 0)),
         });
-        app.select(vec![id]);
-        // RGB, so the red does not go through the CMYK gamut.
         app.color_model = 0;
-        follow_selection(&mut app);
-        assert_eq!(app.mixer_color.to_hex(), "#ff0000");
-        // In the sliders' model, and the viewer took its hue.
-        assert_eq!(app.mixer_color.model_name(), MODELS[app.color_model]);
-        assert!(app.color_docker.hue.abs() < 1.0);
-        // Changing it by hand is kept until the selection changes.
         app.mixer_color = Color::rgb8(0, 0, 255);
-        follow_selection(&mut app);
-        assert_eq!(app.mixer_color.to_hex(), "#0000ff");
-    }
-
-    /// A fill converted to another model under the same selection
-    /// (Convert Colors to RGB) is taken again, and the sliders go to its
-    /// model (#1254); a fill changed within its model is not.
-    #[test]
-    fn the_new_color_follows_a_converted_fill_into_its_model() {
-        let mut app = App::headless();
-        let id = app
-            .new_shape(ShapeKind::Rect {
-                rect: tracedraw_core::Rect::new(0.0, 0.0, 10.0, 10.0),
-                radius: 0.0,
-                corners: None,
-            })
-            .expect("shape");
-        app.run(Command::SetFill {
-            shapes: vec![id],
-            fill: Fill::Solid(Color::cmyk_pct(0.0, 100.0, 100.0, 0.0)),
-        });
         app.select(vec![id]);
-        follow_selection(&mut app);
-        assert_eq!(MODELS[app.color_model], "CMYK");
-        assert_eq!(app.mixer_color.model_name(), "CMYK");
-        assert!(
-            app.convert_colors(&crate::ui::convert_colors::ConvertColorsState {
-                to: tracedraw_core::color_convert::ColorTarget::Rgb,
-                whole: false,
-                spots: false,
-            })
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(Default::default(), |ui| color(&mut app, ui));
+        out.textures_delta.clear();
+        assert_eq!(
+            app.mixer_color.to_hex(),
+            "#0000ff",
+            "selecting an object must keep the user's manually chosen color"
         );
-        follow_selection(&mut app);
-        assert_eq!(MODELS[app.color_model], "RGB");
-        assert_eq!(app.mixer_color.model_name(), "RGB");
-        // Another RGB colour given to it: the new colour stays.
-        let mixed = app.mixer_color;
-        app.run(Command::SetFill {
-            shapes: vec![id],
-            fill: Fill::Solid(Color::rgb8(0, 0, 255)),
-        });
-        follow_selection(&mut app);
-        assert_eq!(app.mixer_color, mixed);
     }
 
     #[test]

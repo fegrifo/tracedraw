@@ -260,6 +260,9 @@ pub struct ExtraRow {
     pub index: usize,
     /// The bar shows the document palette.
     pub document: bool,
+    /// Hidden while the default palette bar already shows this same palette,
+    /// preventing duplicate bars without losing the user's pinned preference.
+    pub hidden_duplicate: bool,
     pub colors: Vec<(String, Color)>,
     pub rgb: Vec<(String, Color)>,
     pub scroll: usize,
@@ -342,11 +345,11 @@ fn colors_of(app: &App, which: Row) -> Vec<(String, Color)> {
             .iter()
             .map(|c| (name_of(app, *c), *c))
             .collect(),
-        Row::Extra(k) => match app.extra_palettes.get(k) {
-            Some(r) if rgb_drawing(app) => r.rgb.clone(),
-            Some(r) => r.colors.clone(),
-            None => Vec::new(),
-        },
+        Row::Extra(k) => app
+            .extra_palettes
+            .get(k)
+            .map(|r| r.colors.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -1425,11 +1428,10 @@ fn menu_of(app: &mut App, ui: &mut Ui, which: Row, swatch: bool) {
             ui,
             "palette.show_document",
             "",
-            app.settings.palette.show_document,
+            app.document_palette_visible(),
         )
     {
-        app.settings.palette.show_document = !app.settings.palette.show_document;
-        app.settings.save();
+        app.toggle_document_palette();
     }
     if which != Row::Document {
         crate::ui::palette_bars::strip_items(app, ui, which);

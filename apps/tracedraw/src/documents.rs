@@ -440,6 +440,7 @@ impl App {
         self.park_active();
         self.unpark(i);
         self.active_doc = i;
+        self.sync_palette_to_document_mode();
         // The status bar's message was about the other drawing (#1128).
         self.status.clear();
     }

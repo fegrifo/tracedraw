@@ -7823,7 +7823,12 @@ fn a_freehand_click_on_the_first_node_closes_the_line() {
         }
         // A little off the first node, within reach.
         let first = at(100.5, 100.3);
-        frame(&ctx, &mut app, vec![Event::PointerMoved(first)], Modifiers::NONE);
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(first)],
+            Modifiers::NONE,
+        );
         let clicks = if double { 2 } else { 1 };
         for _ in 0..clicks {
             for down in [true, false] {
@@ -7909,7 +7914,12 @@ fn space_ends_a_freehand_line_at_the_pointer() {
         }
     }
     let end = at(200.0, 140.0);
-    frame(&ctx, &mut app, vec![Event::PointerMoved(end)], Modifiers::NONE);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(end)],
+        Modifiers::NONE,
+    );
     frame(
         &ctx,
         &mut app,
@@ -20278,16 +20288,23 @@ fn the_color_panel_menu_swaps_fill_and_outline() {
     assert_eq!(shape.stroke.as_ref().map(|s| s.color), Some(red));
 }
 
-/// The Colour panel's "..." menu, No Fill and No Outline take the
-/// selection's fill and outline away.
+/// The Colour panel's No Fill and No Outline buttons take the selection's
+/// fill and outline away.
 #[test]
 fn the_color_panel_menu_takes_the_fill_and_the_outline_away() {
     let (ctx, mut app, id) = setup();
-    color_panel_action(&ctx, &mut app, "docker.no_fill");
+    let _ = color_panel_row(&ctx, &mut app);
+    let no_fill: egui::Rect = ctx
+        .data(|d| d.get_temp(egui::Id::new("col_no_fill")))
+        .expect("No Fill button");
+    click_at(&ctx, &mut app, no_fill.center(), Modifiers::NONE);
     let shape = app.doc().find_shape(id).expect("shape").clone();
     assert_eq!(shape.fill, tracedraw_core::Fill::None);
     assert!(shape.stroke.is_some());
-    color_panel_action(&ctx, &mut app, "docker.no_outline_action");
+    let no_outline: egui::Rect = ctx
+        .data(|d| d.get_temp(egui::Id::new("col_no_outline")))
+        .expect("No Outline button");
+    click_at(&ctx, &mut app, no_outline.center(), Modifiers::NONE);
     let shape = app.doc().find_shape(id).expect("shape").clone();
     assert_eq!(shape.stroke, None);
 }
@@ -29428,12 +29445,21 @@ fn a_clicked_handle_moves_with_the_arrow_keys() {
         "the handle moved: {:?}",
         ctrl1(&app)
     );
-    assert_eq!(app.node_selection, vec![(curve, 0)], "the node stays chosen");
+    assert_eq!(
+        app.node_selection,
+        vec![(curve, 0)],
+        "the node stays chosen"
+    );
     assert!(app.chosen_handle().is_none(), "no ring after a drag");
     // While the button is held on the handle the ring stays on it, moved
     // or not, and goes once the button is let go (#3141).
     let from = app.view.to_screen(ctrl1(&app));
-    frame(&ctx, &mut app, vec![Event::PointerMoved(from)], Modifiers::NONE);
+    frame(
+        &ctx,
+        &mut app,
+        vec![Event::PointerMoved(from)],
+        Modifiers::NONE,
+    );
     frame(
         &ctx,
         &mut app,
@@ -29442,7 +29468,12 @@ fn a_clicked_handle_moves_with_the_arrow_keys() {
     );
     for i in 1..=4 {
         let at = from + egui::vec2(10.0 * i as f32, 0.0);
-        frame(&ctx, &mut app, vec![Event::PointerMoved(at)], Modifiers::NONE);
+        frame(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(at)],
+            Modifiers::NONE,
+        );
         let (_, tip) = app.chosen_handle_ends().expect("the ring stays while held");
         assert!((tip - ctrl1(&app)).hypot() < 1e-9, "on the handle dragged");
     }
@@ -29940,7 +29971,11 @@ fn ctrl_wheel_zooms_when_the_option_is_ticked() {
     for _ in 0..30 {
         step(&mut app, Vec::new(), Modifiers::CTRL);
     }
-    assert!(app.view.zoom > zoom * 1.01, "zoomed in: {zoom} -> {}", app.view.zoom);
+    assert!(
+        app.view.zoom > zoom * 1.01,
+        "zoomed in: {zoom} -> {}",
+        app.view.zoom
+    );
     let still = app.view.to_page(at);
     assert!(
         (still.x - under.x).abs() < 1e-2 && (still.y - under.y).abs() < 1e-2,
@@ -29956,8 +29991,18 @@ fn ctrl_wheel_zooms_when_the_option_is_ticked() {
 fn ctrl_d_repeats_a_move_turn_or_scale_done_to_the_copy_with_the_mouse() {
     let none = Modifiers::NONE;
     let ctrl_d = |ctx: &egui::Context, app: &mut App| {
-        frame(ctx, app, vec![key(egui::Key::D, Modifiers::COMMAND)], Modifiers::COMMAND);
-        frame(ctx, app, vec![key_up(egui::Key::D, Modifiers::COMMAND)], none);
+        frame(
+            ctx,
+            app,
+            vec![key(egui::Key::D, Modifiers::COMMAND)],
+            Modifiers::COMMAND,
+        );
+        frame(
+            ctx,
+            app,
+            vec![key_up(egui::Key::D, Modifiers::COMMAND)],
+            none,
+        );
         frame(ctx, app, Vec::new(), none);
     };
     let t = |app: &App, s: ShapeId| app.doc().find_shape(s).expect("shape").transform;
@@ -29984,8 +30029,18 @@ fn ctrl_d_repeats_a_move_turn_or_scale_done_to_the_copy_with_the_mouse() {
                 // A second click on the copy: the turning handles.
                 let at = app.view.to_screen(Point::new(35.0, 25.0));
                 frame(&ctx, &mut app, vec![Event::PointerMoved(at)], none);
-                frame(&ctx, &mut app, vec![button(at, true, PointerButton::Primary, none)], none);
-                frame(&ctx, &mut app, vec![button(at, false, PointerButton::Primary, none)], none);
+                frame(
+                    &ctx,
+                    &mut app,
+                    vec![button(at, true, PointerButton::Primary, none)],
+                    none,
+                );
+                frame(
+                    &ctx,
+                    &mut app,
+                    vec![button(at, false, PointerButton::Primary, none)],
+                    none,
+                );
                 frame(&ctx, &mut app, Vec::new(), none);
                 assert!(app.rotate_mode, "rotate mode");
                 let ne = handle(&app, Handle::NE);
@@ -29996,12 +30051,24 @@ fn ctrl_d_repeats_a_move_turn_or_scale_done_to_the_copy_with_the_mouse() {
             }
             "scale" => {
                 let e = handle(&app, Handle::E);
-                drag(&ctx, &mut app, e, e + egui::vec2(40.0, 0.0), none, Vec::new());
+                drag(
+                    &ctx,
+                    &mut app,
+                    e,
+                    e + egui::vec2(40.0, 0.0),
+                    none,
+                    Vec::new(),
+                );
             }
             _ => {
                 for _ in 0..3 {
                     frame(&ctx, &mut app, vec![key(egui::Key::ArrowRight, none)], none);
-                    frame(&ctx, &mut app, vec![key_up(egui::Key::ArrowRight, none)], none);
+                    frame(
+                        &ctx,
+                        &mut app,
+                        vec![key_up(egui::Key::ArrowRight, none)],
+                        none,
+                    );
                 }
                 frame(&ctx, &mut app, Vec::new(), none);
             }
@@ -30073,10 +30140,18 @@ fn the_guidelines_panel_works_from_the_keyboard() {
     frame(
         &ctx,
         &mut app,
-        vec![Event::Text("40".into()), key(egui::Key::Enter, Modifiers::NONE)],
+        vec![
+            Event::Text("40".into()),
+            key(egui::Key::Enter, Modifiers::NONE),
+        ],
         Modifiers::NONE,
     );
-    frame(&ctx, &mut app, vec![key_up(egui::Key::Enter, Modifiers::NONE)], Modifiers::NONE);
+    frame(
+        &ctx,
+        &mut app,
+        vec![key_up(egui::Key::Enter, Modifiers::NONE)],
+        Modifiers::NONE,
+    );
     let want = {
         let mut f = app.guide_form;
         f.y = 40.0 * app.units.world_mm();
@@ -30085,7 +30160,17 @@ fn the_guidelines_panel_works_from_the_keyboard() {
     assert_eq!(app.page_guides().len(), 1);
     assert_eq!(app.page_guides()[0].line, want, "typed over, not added to");
     // Alt+A: another guideline at the fields' values.
-    frame(&ctx, &mut app, vec![key(egui::Key::A, Modifiers::ALT)], Modifiers::ALT);
-    frame(&ctx, &mut app, vec![key_up(egui::Key::A, Modifiers::ALT)], Modifiers::NONE);
+    frame(
+        &ctx,
+        &mut app,
+        vec![key(egui::Key::A, Modifiers::ALT)],
+        Modifiers::ALT,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![key_up(egui::Key::A, Modifiers::ALT)],
+        Modifiers::NONE,
+    );
     assert_eq!(app.page_guides().len(), 2, "Alt+A adds");
 }

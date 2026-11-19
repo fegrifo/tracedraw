@@ -189,7 +189,13 @@ pub fn toolbar_bands(app: &App) -> Vec<(u32, usize)> {
         .palette_bars
         .iter()
         .enumerate()
-        .filter(|(k, b)| b.among_toolbars() && *k < app.extra_palettes.len())
+        .filter(|(k, b)| {
+            b.among_toolbars()
+                && app
+                    .extra_palettes
+                    .get(*k)
+                    .is_some_and(|r| !r.hidden_duplicate)
+        })
         .filter_map(|(k, b)| Some((b.toolbar_row?, k)))
         .collect();
     bands.sort();
@@ -764,9 +770,10 @@ pub fn docked(app: &mut App, ui: &mut Ui, dock: Dock, slot: BarSlot) {
     // Those among the toolbars come with the toolbars (`toolbar_band`).
     let mut bars: Vec<usize> = (0..app.extra_palettes.len())
         .filter(|k| {
-            app.settings.palette_bars.get(*k).is_some_and(|b| {
-                b.dock == dock && !b.among_toolbars() && b.slot_or_default() == slot
-            })
+            !app.extra_palettes[*k].hidden_duplicate
+                && app.settings.palette_bars.get(*k).is_some_and(|b| {
+                    b.dock == dock && !b.among_toolbars() && b.slot_or_default() == slot
+                })
         })
         .collect();
     // Along the bottom a panel added later lies above the earlier ones:
@@ -821,11 +828,12 @@ pub fn floating(app: &mut App, ctx: &egui::Context) {
         floating_window(app, ctx, Row::Main);
     }
     for k in 0..app.extra_palettes.len() {
-        if app
-            .settings
-            .palette_bars
-            .get(k)
-            .is_some_and(|b| b.dock == Dock::Floating)
+        if !app.extra_palettes[k].hidden_duplicate
+            && app
+                .settings
+                .palette_bars
+                .get(k)
+                .is_some_and(|b| b.dock == Dock::Floating)
         {
             floating_window(app, ctx, Row::Extra(k));
         }
@@ -1808,5 +1816,84 @@ mod rename_tests {
         b.slot = Some(BarSlot::Inner);
         b.sanitize();
         assert_eq!(b.slot, None);
+    }
+
+    #[test]
+    fn mode_default_palette_tracks_document_mode_and_deduplicates_pinned_bars() {
+        use tracedraw_core::document::PrimaryColorMode;
+        let mut app = App::headless();
+        let cmyk = app
+            .palettes
+            .iter()
+            .position(|p| p.key == "palette.default_cmyk")
+            .expect("cmyk");
+        let rgb = app
+            .palettes
+            .iter()
+            .position(|p| p.key == "palette.default_rgb")
+            .expect("rgb");
+
+        // Starts in CMYK mode with Default CMYK as the active mode bar.
+        app.sync_palette_to_document_mode();
+        assert_eq!(app.visible_palettes[0], cmyk);
+
+        // Pin both CMYK and RGB presets: CMYK is deduplicated while on CMYK doc,
+        // RGB is shown beside it.
+        app.toggle_pinned_palette(cmyk);
+        app.toggle_pinned_palette(rgb);
+        assert!(app.is_palette_pinned(cmyk));
+        assert!(app.is_palette_pinned(rgb));
+        assert!(app
+            .extra_palettes
+            .iter()
+            .any(|r| r.index == cmyk && r.hidden_duplicate));
+        assert!(app
+            .extra_palettes
+            .iter()
+            .any(|r| r.index == rgb && !r.hidden_duplicate));
+
+        // Switch the document to RGB mode: mode bar becomes RGB, RGB extra bar
+        // is deduplicated, and the pinned CMYK extra bar reappears.
+        let mut md = app.doc().metadata.clone();
+        md.primary_color_mode = PrimaryColorMode::Rgb;
+        app.run(tracedraw_core::Command::SetMetadata { metadata: md });
+        app.sync_palette_to_document_mode();
+        assert_eq!(app.visible_palettes[0], rgb);
+        assert!(app
+            .extra_palettes
+            .iter()
+            .any(|r| r.index == rgb && r.hidden_duplicate));
+        assert!(app
+            .extra_palettes
+            .iter()
+            .any(|r| r.index == cmyk && !r.hidden_duplicate));
+
+        // Hiding the automatic mode-default bar reveals both pinned presets.
+        app.toggle_mode_default_palette();
+        assert!(!app.settings.palette.show_palette);
+        assert!(app.extra_palettes.iter().all(|r| !r.hidden_duplicate));
+    }
+
+    #[test]
+    fn document_palette_is_unified_and_migrates_legacy_duplicate() {
+        let legacy: crate::settings::Settings = serde_json::from_str(
+            r#"{"palette":{"show_document":true},"palette_bars":[{"palette":"document","dock":"bottom"}]}"#,
+        )
+        .expect("legacy settings");
+        assert!(legacy.palette.follow_document_mode);
+        let mut app = App::headless();
+        app.apply_settings(legacy);
+        // Only one document palette remains active (the detached bar; docked row cleared).
+        assert!(app.document_palette_visible());
+        assert!(!app.settings.palette.show_document);
+        assert_eq!(app.extra_palettes.iter().filter(|r| r.document).count(), 1);
+
+        // One toggle hides it completely; toggling again brings it back.
+        app.toggle_document_palette();
+        assert!(!app.document_palette_visible());
+        assert_eq!(app.extra_palettes.iter().filter(|r| r.document).count(), 0);
+        app.toggle_document_palette();
+        assert!(app.document_palette_visible());
+        assert!(app.settings.palette.show_document);
     }
 }

@@ -710,6 +710,7 @@ impl App {
     pub fn took_sampled_color(&mut self, c: Color, shift: bool) {
         self.eyedropper_color = Some(c);
         self.eyedropper_apply = true;
+        crate::ui::color_docker::take_sampled_color(self, c);
         self.status = crate::i18n::trf(
             "status.sampled_color",
             &[("c", &crate::app::color_description(c))],

@@ -58,9 +58,9 @@ pub mod field;
 pub mod fill_tool_bars;
 pub mod focus_bar;
 pub mod font_list;
-pub mod formula_dialog;
 pub mod font_manager;
 pub mod font_sampler;
+pub mod formula_dialog;
 pub mod fountain_place;
 pub mod fx_icons;
 pub mod github_dialogs;
@@ -132,6 +132,8 @@ pub mod tracecut_nest;
 pub mod update_card;
 pub mod update_progress;
 // The audit reads widget names, which egui keeps only in debug builds.
+pub mod shape_gen_docker;
+pub mod symbol_scatter_docker;
 #[cfg(all(test, debug_assertions))]
 mod tip_audit;
 pub mod tips;
@@ -139,8 +141,6 @@ pub mod toolbar;
 pub mod toolbox;
 pub mod transform_docker;
 pub mod transparency_docker;
-pub mod shape_gen_docker;
-pub mod symbol_scatter_docker;
 pub mod vector_mosaic_docker;
 pub mod welcome;
 pub mod window_bars;
@@ -641,16 +641,16 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     // them and the drawing (at the bottom by default). The document
     // palette is a row under the drawing window (over it when the
     // palette is docked at the top).
+    app.sync_palette_to_document_mode();
     let palette_frame = Frame::new().fill(Tokens::panel());
     let (palette_dock, palette_spot) = bars_layout.palette_place();
     let palette_beside = palette_spot == bars::PaletteSpot::Beside;
     let palette_edge = palette_spot == bars::PaletteSpot::Edge;
     let show_palette = app.settings.palette.show_palette;
     // A document palette taken out into a bar of its own shows there, not
-    // in the row as well.
-    let show_doc_palette = show_palette
-        && app.settings.palette.show_document
-        && !app.extra_palettes.iter().any(|r| r.document);
+    // in the row as well. Its visibility is independent of the default palette.
+    let show_doc_palette =
+        app.settings.palette.show_document && !app.extra_palettes.iter().any(|r| r.document);
     // Palette bars lie at the places `BarSlot` names along each side,
     // from the edge inwards; each bar drawn at a side is noted for the
     // drops of a dragged palette bar beside it (`palette_bars::side_target`).
@@ -1204,10 +1204,8 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
             // the drawing zoomed as with the plain wheel. A touchpad's
             // fine steps with Ctrl (a pinch on some systems) still zoom,
             // and so does every Ctrl+wheel with Ctrl+wheel zooms (#3473).
-            let ctrl_pans = app.settings.wheel_zooms
-                && !app.settings.ctrl_wheel_zooms
-                && mods.ctrl
-                && !pinched;
+            let ctrl_pans =
+                app.settings.wheel_zooms && !app.settings.ctrl_wheel_zooms && mods.ctrl && !pinched;
             let pan_id = egui::Id::new("ctrl_wheel_pans");
             if ctrl_pans && wheel_points != egui::Vec2::ZERO {
                 ui.ctx().data_mut(|d| d.insert_temp(pan_id, wheel_notched));
@@ -2814,7 +2812,11 @@ mod tests {
         tap(&mut app, ctrl);
         assert!(!app.touch_mods.any(), "slow taps: {:?}", app.touch_mods);
         tap(&mut app, ctrl);
-        assert!(app.touch_mods.ctrl, "double tap locks: {:?}", app.touch_mods);
+        assert!(
+            app.touch_mods.ctrl,
+            "double tap locks: {:?}",
+            app.touch_mods
+        );
         assert!(ctx.input(|i| i.modifiers.ctrl));
         // Locked: it stays down while another finger taps.
         let at = app.view.to_screen(Point::new(150.0, 220.0));

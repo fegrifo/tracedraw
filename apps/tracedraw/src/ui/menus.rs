@@ -4963,39 +4963,68 @@ fn window_menu(app: &mut App, ui: &mut Ui) {
         }
     });
     sub(ui, "menu.window.color_palettes", |ui| {
-        let entries: Vec<(usize, String, String, bool)> = app
+        let mode_label = format!(
+            "{} ({})",
+            tr("palette.show_mode_default"),
+            app.document_mode_label()
+        );
+        if check_label(
+            ui,
+            &mode_label,
+            "palette.show_mode_default",
+            app.settings.palette.show_palette,
+        ) {
+            app.toggle_mode_default_palette();
+        }
+        let doc_name = app.document_palette_name();
+        if check_label(
+            ui,
+            &doc_name,
+            "palette.show_document",
+            app.document_palette_visible(),
+        ) {
+            app.toggle_document_palette();
+        }
+        sep(ui);
+        let presets: Vec<(usize, String, String, bool)> = app
             .palettes
             .iter()
             .enumerate()
+            .filter(|(_, p)| p.builtin)
             .map(|(i, p)| {
                 (
                     i,
                     p.name_key().to_string(),
                     app.palette_name(i),
-                    app.visible_palettes.contains(&i),
+                    app.is_palette_pinned(i),
                 )
             })
             .collect();
-        if check(
-            ui,
-            "palette.show_document",
-            "",
-            app.settings.palette.show_document,
-        ) {
-            app.settings.palette.show_document = !app.settings.palette.show_document;
-            app.settings.save();
-        }
-        for (i, key, name, on) in entries {
+        for (i, key, name, on) in presets {
             if check_label(ui, &name, &key, on) {
-                app.toggle_palette(i);
+                app.toggle_pinned_palette(i);
             }
         }
-        let doc_open = app.extra_palettes.iter().any(|r| r.document);
-        let doc_name = app.document_palette_name();
-        if check_label(ui, &doc_name, "palette.document_bar", doc_open) {
-            match app.extra_palettes.iter().position(|r| r.document) {
-                Some(k) => crate::ui::palette_bars::close_bar(app, k),
-                None => app.open_palette_bar(crate::settings::DOCUMENT_PALETTE),
+        let customs: Vec<(usize, String, String, bool)> = app
+            .palettes
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !p.builtin)
+            .map(|(i, p)| {
+                (
+                    i,
+                    p.name_key().to_string(),
+                    app.palette_name(i),
+                    app.is_palette_pinned(i),
+                )
+            })
+            .collect();
+        if !customs.is_empty() {
+            sep(ui);
+            for (i, key, name, on) in customs {
+                if check_label(ui, &name, &key, on) {
+                    app.toggle_pinned_palette(i);
+                }
             }
         }
         sep(ui);
